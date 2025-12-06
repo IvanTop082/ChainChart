@@ -158,6 +158,21 @@ def deploy_contract_with_neonjs(
                 return deploy_result
             else:
                 error_msg = deploy_result.get("error", "Unknown error")
+                
+                # Check if contract already exists (this is actually a success case)
+                if deploy_result.get("already_deployed"):
+                    contract_hash = deploy_result.get("contract_hash", "unknown")
+                    logger.warning(f"⚠️  Contract already deployed: {contract_hash}")
+                    logger.warning("   This means the deployment mechanism works!")
+                    logger.warning("   To deploy a new contract, change the contract name or code.")
+                    return {
+                        "success": False,
+                        "tx_hash": None,
+                        "error": f"Contract already deployed at {contract_hash}. Change contract name/code to deploy a new one.",
+                        "contract_hash": contract_hash,
+                        "already_deployed": True
+                    }
+                
                 logger.error(f"❌ Deployment failed: {error_msg}")
                 return deploy_result
                 

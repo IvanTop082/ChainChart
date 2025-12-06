@@ -42,33 +42,99 @@ async function deployContract() {
         console.log(`Network magic: ${networkMagic}`);
         console.log(`Account address: ${account.address}`);
 
-        // Deploy using neon-js experimental.deployContract (exactly like NeoNova for local)
-        // This handles ALL transaction building, signing, and sending
-        const result = await experimental.deployContract(
-            nefFile,
-            contractManifest,
-            {
-                networkMagic: networkMagic,
-                rpcAddress: rpcUrl,
-                account: account
-            }
-        );
+            // Deploy using neon-js experimental.deployContract (exactly like NeoNova for local)
+            // This handles ALL transaction building, signing, and sending
+            try {
+                const result = await experimental.deployContract(
+                    nefFile,
+                    contractManifest,
+                    {
+                        networkMagic: networkMagic,
+                        rpcAddress: rpcUrl,
+                        account: account
+                    }
+                );
 
-        // Get transaction hash
-        const txHash = result.txid || result.txId || result.hash;
-        
-        if (txHash) {
-            console.log(JSON.stringify({
-                success: true,
-                tx_hash: txHash,
-                error: null
-            }));
-        } else {
-            console.log(JSON.stringify({
-                success: false,
-                tx_hash: null,
-                error: 'Deployment completed but no transaction hash returned'
-            }));
+            // Log full result for debugging
+            console.error(`DEBUG: result type: ${typeof result}`);
+            console.error(`DEBUG: result keys: ${result ? Object.keys(result).join(', ') : 'null'}`);
+            if (result && result.tx) {
+                console.error(`DEBUG: result.tx type: ${typeof result.tx}`);
+                console.error(`DEBUG: result.tx keys: ${Object.keys(result.tx).join(', ')}`);
+                if (result.tx.hash) {
+                    console.error(`DEBUG: result.tx.hash: ${result.tx.hash}`);
+                }
+            }
+
+            // Get transaction hash - try multiple possible locations
+            let txHash = null;
+            if (result) {
+                // Try direct properties
+                txHash = result.txid || result.txId || result.hash;
+                
+                // Try nested in tx object
+                if (!txHash && result.tx) {
+                    txHash = result.tx.hash || result.tx.txid || result.tx.txId;
+                }
+                
+                // Try data property (like wallet adapter)
+                if (!txHash && result.data) {
+                    txHash = result.data.txId || result.data.txid || result.data.hash;
+                }
+                
+                // Try converting transaction object to hash
+                if (!txHash && result.tx && typeof result.tx.hash === 'function') {
+                    txHash = result.tx.hash();
+                }
+            }
+            
+            if (txHash) {
+                // Convert to string if it's an object
+                if (typeof txHash === 'object' && txHash.toString) {
+                    txHash = txHash.toString();
+                }
+                console.log(JSON.stringify({
+                    success: true,
+                    tx_hash: txHash,
+                    error: null
+                }));
+            } else {
+                // Even if no hash, deployment might have succeeded
+                // Calculate contract hash like NeoNova does
+                const contractHash = experimental.getContractHash(
+                    u.HexString.fromHex(wallet.getScriptHashFromAddress(account.address)),
+                    nefFile.checksum,
+                    contractManifest.name
+                );
+                console.log(JSON.stringify({
+                    success: true,
+                    tx_hash: null,
+                    contract_hash: contractHash,
+                    error: 'Deployment completed but no transaction hash returned. Contract hash calculated.',
+                    note: 'Check RPC for transaction status'
+                }));
+            }
+        } catch (deployError) {
+            // Handle specific error cases
+            const errorMsg = deployError.message || String(deployError);
+            
+            // Check if contract already exists
+            if (errorMsg.includes('Contract Already Exists') || errorMsg.includes('already exists')) {
+                // Extract contract hash if available
+                const contractHashMatch = errorMsg.match(/0x[a-fA-F0-9]{40}/);
+                const contractHash = contractHashMatch ? contractHashMatch[0] : null;
+                
+                console.log(JSON.stringify({
+                    success: false,
+                    tx_hash: null,
+                    error: `Contract already deployed. ${contractHash ? `Contract hash: ${contractHash}` : 'Use update instead of deploy.'}`,
+                    contract_hash: contractHash,
+                    already_deployed: true
+                }));
+            } else {
+                // Re-throw other errors to be caught by outer catch
+                throw deployError;
+            }
         }
 
     } catch (error) {

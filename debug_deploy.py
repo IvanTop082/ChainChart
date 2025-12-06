@@ -77,9 +77,8 @@ def main():
     print()
     
     # Import and call deployment function
+    # Try neon-js first (EXACTLY like NeoNova), then fallback to neo-mamba
     try:
-        from generator.neonova_deploy import deploy_contract_neonova_style
-        
         rpc_url = os.getenv("NEO_RPC_URL", "http://seed3t5.neo.org:20332")
         
         print(f"📁 NEF file: {nef_path}")
@@ -88,12 +87,37 @@ def main():
         print(f"🔑 Private key: {'*' * (len(private_key) - 10)}{private_key[-10:]}")
         print()
         
-        result = deploy_contract_neonova_style(
-            str(nef_path),
-            str(manifest_path),
-            private_key,
-            rpc_url
-        )
+        # Try neon-js approach first (EXACTLY like NeoNova)
+        result = None
+        try:
+            from generator.neonova_deploy_neonjs import deploy_contract_with_neonjs
+            print("🚀 Using neon-js deployment (EXACTLY like NeoNova)...")
+            print()
+            result = deploy_contract_with_neonjs(
+                str(nef_path),
+                str(manifest_path),
+                private_key,
+                rpc_url
+            )
+        except ImportError:
+            print("⚠️  neon-js deployment not available, using neo-mamba fallback...")
+            print()
+        except Exception as neonjs_error:
+            print(f"⚠️  neon-js deployment failed: {neonjs_error}")
+            print("⚠️  Falling back to neo-mamba...")
+            print()
+        
+        # Fallback to neo-mamba if neon-js didn't work
+        if result is None or not result.get("success"):
+            from generator.neonova_deploy import deploy_contract_neonova_style
+            print("🔄 Using neo-mamba deployment (fallback)...")
+            print()
+            result = deploy_contract_neonova_style(
+                str(nef_path),
+                str(manifest_path),
+                private_key,
+                rpc_url
+            )
         
         print()
         print("=" * 60)

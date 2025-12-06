@@ -5,6 +5,8 @@ Handles workflow execution requests from the UI.
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
+from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 from typing import Dict, Any, List, Optional
 from pathlib import Path
@@ -33,6 +35,26 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# Serve generated_contracts directory for frontend to fetch NEF/manifest files
+generated_contracts_dir = Path("generated_contracts")
+generated_contracts_dir.mkdir(exist_ok=True)
+
+@app.get("/generated_contracts/{filename}")
+async def get_generated_file(filename: str):
+    """Serve files from generated_contracts directory"""
+    file_path = generated_contracts_dir / filename
+    if not file_path.exists():
+        raise HTTPException(status_code=404, detail=f"File {filename} not found")
+    if not file_path.is_file():
+        raise HTTPException(status_code=400, detail=f"{filename} is not a file")
+    # Security: ensure file is within generated_contracts directory
+    try:
+        file_path.resolve().relative_to(generated_contracts_dir.resolve())
+    except ValueError:
+        raise HTTPException(status_code=403, detail="Access denied")
+    
+    return FileResponse(str(file_path))
 
 
 class DiagramRequest(BaseModel):
@@ -587,6 +609,27 @@ async def deploy_contract_endpoint(request: ContractDeployRequest = ContractDepl
         if str(manifest_file) != str(target_manifest):
             shutil.copy2(manifest_file, target_manifest)
         
+        # Get private key from request or environment (needed for both deployment methods)
+        private_key = None
+        if request and hasattr(request, 'private_key') and request.private_key:
+            private_key = request.private_key
+        else:
+            # Try to load from environment/config
+            try:
+                from deployment.config import NEO_PRIVATE_KEY
+                private_key = NEO_PRIVATE_KEY
+            except ImportError:
+                import os
+                from dotenv import load_dotenv
+                load_dotenv()
+                private_key = os.getenv("NEO_PRIVATE_KEY")
+        
+        if not private_key:
+            raise HTTPException(
+                status_code=400,
+                detail="NEO_PRIVATE_KEY required for deployment. Set it in .env file or provide in request."
+            )
+        
         # Step 3: Deploy to testnet using neon-js (EXACTLY like NeoNova)
         # NeoNova uses neon-js's experimental.deployContract - we use the same library!
         try:
@@ -624,24 +667,6 @@ async def deploy_contract_endpoint(request: ContractDeployRequest = ContractDepl
             from generator.neonova_deploy import deploy_contract_neonova_style
             import logging
             logger = logging.getLogger(__name__)
-            
-            # Get private key from request or environment
-            private_key = None
-            if request and hasattr(request, 'private_key') and request.private_key:
-                private_key = request.private_key
-            else:
-                # Try to load from environment/config
-                try:
-                    from deployment.config import NEO_PRIVATE_KEY
-                    private_key = NEO_PRIVATE_KEY
-                except ImportError:
-                    import os
-                    from dotenv import load_dotenv
-                    load_dotenv()
-                    private_key = os.getenv("NEO_PRIVATE_KEY")
-            
-            if not private_key:
-                raise ValueError("NEO_PRIVATE_KEY required for deployment. Set it in .env file or provide in request.")
             
             logger.info("🚀 Attempting NeoNova-style deployment (using neo-mamba, matches neon-js format)...")
             

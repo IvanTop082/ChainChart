@@ -9,6 +9,13 @@ from typing import Dict, Any
 from spoon_ai.agents import SpoonReactAI
 from spoon_ai.chat import ChatBot
 
+# Load environment variables from .env file
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except ImportError:
+    pass  # dotenv not installed, will use environment variables directly
+
 from .tools.contract_generate_tool import ContractGenerateTool
 
 
@@ -86,9 +93,9 @@ class ContractAgent:
             return self._generate_fallback_contract(structure)
     
     def _build_contract_prompt(self, structure: Dict[str, Any]) -> str:
-        """Build detailed prompt for LLM contract generation"""
+        """Build detailed prompt for LLM contract generation with full edge utilization"""
         
-        prompt = f"""Generate a complete Neo N3 smart contract in **C#**, following these specifications:
+        prompt = f"""Generate a complete Neo N3 smart contract in **C#** from this ChainChart diagram.
 
 ## Contract Structure:
 
@@ -110,27 +117,122 @@ class ContractAgent:
         
         prompt += "\n### Conditions:\n"
         for cond in structure.get("conditions", []):
-            prompt += f"- if ({cond['expression']})\n"
+            prompt += f"- Condition ID {cond['id']}: if ({cond['expression']})\n"
         
         prompt += "\n### Operations:\n"
         for op in structure.get("operations", []):
-            prompt += f"- {op['operand_a']} {op['operation']} {op.get('operand_b', '')}\n"
+            prompt += f"- Operation ID {op['id']}: {op['operand_a']} {op['operation']} {op.get('operand_b', '')}\n"
+        
+        # CRITICAL: Include edge information for control flow
+        edges = structure.get("edges", [])
+        if edges:
+            prompt += "\n### Control Flow (Edges):\n"
+            prompt += "The edges define the execution flow and function logic. Use them to:\n"
+            prompt += "1. Determine which operations/conditions belong to which functions\n"
+            prompt += "2. Understand the order of operations within functions\n"
+            prompt += "3. Implement conditional branching (if/else) based on condition nodes\n"
+            prompt += "4. Connect operations to their results and subsequent operations\n\n"
+            
+            # Group edges by function (if function nodes exist)
+            functions = structure.get("functions", [])
+            if functions:
+                for func in functions:
+                    func_id = func['id']
+                    func_edges = [e for e in edges if e.get("from") == func_id or e.get("to") == func_id]
+                    if func_edges:
+                        prompt += f"\nFunction '{func['name']}' (ID: {func_id}) flow:\n"
+                        # Build execution path for this function
+                        visited = set()
+                        def trace_path(node_id, depth=0):
+                            if node_id in visited or depth > 20:  # Prevent infinite loops
+                                return ""
+                            visited.add(node_id)
+                            path_str = "  " * depth
+                            
+                            # Find node
+                            all_nodes = structure.get("nodes", [])
+                            node = next((n for n in all_nodes if n.get("id") == node_id), None)
+                            if node:
+                                node_type = node.get("type")
+                                node_data = node.get("data", {})
+                                
+                                if node_type == "operation":
+                                    path_str += f"→ Operation: {node_data.get('op', '')} on {node_data.get('a', '')} and {node_data.get('b', '')}\n"
+                                elif node_type == "condition":
+                                    path_str += f"→ Condition: if ({node_data.get('expression', '')})\n"
+                                elif node_type == "event":
+                                    path_str += f"→ Emit Event: {node_data.get('name', '')}\n"
+                                elif node_type == "state":
+                                    path_str += f"→ Read/Write State: {node_data.get('label', '')}\n"
+                            
+                            # Find outgoing edges
+                            outgoing = [e for e in edges if e.get("from") == node_id]
+                            for edge in outgoing:
+                                next_node_id = edge.get("to")
+                                path_str += trace_path(next_node_id, depth + 1)
+                            
+                            return path_str
+                        
+                        # Start tracing from function node
+                        prompt += trace_path(func_id)
+            
+            # Also show all edges for reference
+            prompt += "\n\nAll Edges (for reference):\n"
+            for edge in edges:
+                from_type = edge.get("from_type", "unknown")
+                to_type = edge.get("to_type", "unknown")
+                prompt += f"- {edge.get('from')} ({from_type}) → {edge.get('to')} ({to_type})\n"
         
         prompt += """
 ## Requirements:
 
 1. Use Neo N3 C# contract template
-2. Include proper using statements (Neo, Neo.SmartContract, Neo.SmartContract.Framework, etc.)
-3. Create storage variables for all State nodes using StorageMap
-4. Create public static methods for all Function nodes
-5. Implement branching logic for Condition nodes
-6. Implement arithmetic/logic for Operation nodes
-7. Declare Neo events for all Event nodes
-8. Add owner modifier if any modifier nodes exist
-9. Include proper Neo contract attributes ([DisplayName], [ManifestExtra])
-10. Use BigInteger for numeric types
-11. Use ByteString for byte arrays
-12. Follow Neo N3 best practices
+2. **CRITICAL: Include ALL required using statements at the top:**
+   ```
+   using Neo;
+   using Neo.SmartContract.Framework;
+   using Neo.SmartContract.Framework.Services;
+   using System;
+   using System.Numerics;
+   ```
+   - `using System;` is REQUIRED for `Action` type used in events
+   - `using Neo;` is REQUIRED for Neo types
+   - `using Neo.SmartContract.Framework;` is REQUIRED for SmartContract base class
+   - `using Neo.SmartContract.Framework.Services;` is REQUIRED for Storage, Runtime, etc.
+   - `using System.Numerics;` is REQUIRED for BigInteger
+3. **DO NOT use [DisplayName] attributes** - they are not available in Neo N3. Use [ManifestExtra] instead.
+4. Create storage variables for all State nodes using StorageMap
+5. Create public static methods for all Function nodes
+6. **CRITICAL: Use the edge information to build function logic:**
+   - Operations connected to a function should be inside that function
+   - Conditions should create if/else blocks based on their edges
+   - Follow the execution flow defined by edges
+   - Operations should execute in the order defined by edge connections
+7. Implement branching logic for Condition nodes (use edges to determine true/false paths)
+8. Implement arithmetic/logic for Operation nodes in the correct order
+9. Declare Neo events for all Event nodes using `public static event Action<...>` and emit them where edges indicate
+10. Add owner modifier if any modifier nodes exist
+11. Use BigInteger for numeric types
+12. Use ByteString for byte arrays
+13. **CRITICAL: Do NOT use .ToBigInteger() method** - it doesn't exist in Neo N3
+    - Use direct cast instead: `(BigInteger)value`
+    - Example: `var result = (BigInteger)storageValue;` NOT `var result = storageValue.ToBigInteger();`
+    - When reading from storage: `var value = (BigInteger)storageMap.Get(key);`
+14. **CRITICAL: Do NOT use null-coalescing operator (??) with ByteString**
+    - `storageMap.Get(key)` returns `ByteString`, not `BigInteger`
+    - WRONG: `var value = storageMap.Get(key) ?? 0;` (this causes compilation error)
+    - CORRECT: `ByteString value = storageMap.Get(key); return value is null ? 0 : (BigInteger)value;`
+    - Or: `var value = storageMap.Get(key); return value is null ? 0 : (BigInteger)value;`
+    - Always use `is null` check with ternary operator, NOT `??` operator
+15. Follow Neo N3 best practices
+
+## Edge-Based Logic Construction:
+
+- If an edge goes from Function → Operation: Operation belongs in that function
+- If an edge goes from Operation → Operation: Second operation uses result of first
+- If an edge goes from Condition → Operation: Operation is in the true/false branch
+- If an edge goes from Operation → Event: Emit event after operation completes
+- If an edge goes from Function → Condition: Condition is checked at start of function
 
 ## Important:
 - Return ONLY the C# code
@@ -138,6 +240,7 @@ class ContractAgent:
 - Do NOT include explanations or markdown outside code block
 - Ensure code is valid, compilable Neo N3 contract
 - Use proper Neo storage patterns (StorageMap, StorageContext)
+- **The edges define the actual function logic - use them!**
 
 Generate the complete contract now:
 """

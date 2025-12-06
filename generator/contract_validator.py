@@ -31,26 +31,186 @@ def validate_contract(contract_code: str) -> Tuple[bool, List[str], str]:
     
     # Check 2: Required namespaces
     required_namespaces = [
+        "using Neo;",
         "using Neo.SmartContract.Framework;",
         "using Neo.SmartContract.Framework.Services;",
         "using System.Numerics;"
     ]
     
-    for ns in required_namespaces:
-        if ns not in fixed_code:
-            errors.append(f"Missing required namespace: {ns}")
-            # Add namespace after other using statements
-            if "using Neo;" in fixed_code:
-                fixed_code = fixed_code.replace("using Neo;", f"using Neo;\n{ns}")
-            elif "using" in fixed_code:
-                # Find last using statement
-                last_using = fixed_code.rfind("using")
-                if last_using != -1:
-                    next_newline = fixed_code.find("\n", last_using)
-                    if next_newline != -1:
-                        fixed_code = fixed_code[:next_newline+1] + ns + "\n" + fixed_code[next_newline+1:]
+    # Check if Action is used (needs System)
+    if "Action<" in fixed_code or "event Action" in fixed_code:
+        if "using System;" not in fixed_code:
+            required_namespaces.append("using System;")
     
-    # Check 3: Storage variables use StorageMap correctly
+    # Check if ManifestExtra is used (needs Attributes namespace)
+    if "[ManifestExtra" in fixed_code or "ManifestExtraAttribute" in fixed_code:
+        if "using Neo.SmartContract.Framework.Attributes;" not in fixed_code:
+            required_namespaces.append("using Neo.SmartContract.Framework.Attributes;")
+    
+    # Ensure all required namespaces are present
+    # First, collect all missing namespaces
+    missing_namespaces = [ns for ns in required_namespaces if ns not in fixed_code]
+    
+    if missing_namespaces:
+        # Find where to insert using statements
+        # They should be at the very top, before namespace or any other code
+        
+        # Find the first non-whitespace line
+        lines = fixed_code.split('\n')
+        first_code_line_idx = 0
+        for i, line in enumerate(lines):
+            stripped = line.strip()
+            if stripped and not stripped.startswith('//'):
+                first_code_line_idx = i
+                break
+        
+        # Check if there are existing using statements
+        using_statements = []
+        using_end_idx = first_code_line_idx
+        
+        for i in range(first_code_line_idx):
+            line = lines[i].strip()
+            if line.startswith('using '):
+                using_statements.append(line)
+                using_end_idx = i + 1
+        
+        # Add missing using statements after existing ones (or at the start)
+        for ns in missing_namespaces:
+            errors.append(f"Missing required namespace: {ns}")
+            # Insert after last using statement, or at the beginning
+            if using_statements:
+                # Insert after the last using statement
+                lines.insert(using_end_idx, ns)
+                using_end_idx += 1
+            else:
+                # Insert at the very beginning
+                lines.insert(0, ns)
+                using_end_idx += 1
+        
+        fixed_code = '\n'.join(lines)
+    
+    # Check 3: Fix ByteString.ToBigInteger() - this method doesn't exist in Neo N3
+    # Must use direct cast (BigInteger) instead
+    import re
+    
+    # First, fix double casts that might result from previous fixes
+    fixed_code = re.sub(r'\(BigInteger\)\(BigInteger\)', r'(BigInteger)', fixed_code)
+    
+    # Comprehensive fix for .ToBigInteger() - handle ALL patterns
+    # This is a multi-step approach to catch all cases
+    
+    # Step 1: Fix simple patterns: variable.ToBigInteger()
+    fixed_code = re.sub(r'(\b[a-zA-Z_][a-zA-Z0-9_]*)\s*\.ToBigInteger\(\)', r'(BigInteger)\1', fixed_code)
+    
+    # Step 2: Fix method call patterns: obj.Method().ToBigInteger() or obj.Method(arg).ToBigInteger()
+    # Match: identifier, optional property access, method call with args, then .ToBigInteger()
+    def fix_method_call_tobiginteger(match):
+        expr = match.group(1).strip()
+        # Remove trailing whitespace
+        expr = expr.rstrip()
+        return f'(BigInteger)({expr})'
+    
+    # Pattern for method calls: matches expressions like storageMap.Get(key) or value.ToString()
+    # This pattern is more permissive to catch all method call chains
+    method_pattern = r'([a-zA-Z_][a-zA-Z0-9_.]*(?:\([^)]*\))+)\s*\.ToBigInteger\(\)'
+    fixed_code = re.sub(method_pattern, fix_method_call_tobiginteger, fixed_code)
+    
+    # Step 3: Fix property access patterns: obj.Property.ToBigInteger()
+    property_pattern = r'([a-zA-Z_][a-zA-Z0-9_]*(?:\.[a-zA-Z_][a-zA-Z0-9_]*)+)\s*\.ToBigInteger\(\)'
+    fixed_code = re.sub(property_pattern, fix_method_call_tobiginteger, fixed_code)
+    
+    # Step 4: Final pass - catch any remaining .ToBigInteger() patterns
+    # This is a fallback that handles edge cases
+    if '.ToBigInteger()' in fixed_code:
+        # Line-by-line fix for any remaining cases
+        lines = fixed_code.split('\n')
+        for i, line in enumerate(lines):
+            if '.ToBigInteger()' in line:
+                # Find the expression before .ToBigInteger()
+                # Match everything up to .ToBigInteger() that's not whitespace or operators
+                # This is a more aggressive pattern
+                match = re.search(r'([a-zA-Z_][a-zA-Z0-9_.()\[\]"]*(?:\.[a-zA-Z_][a-zA-Z0-9_]*(?:\([^)]*\))?)*)\s*\.ToBigInteger\(\)', line)
+                if match:
+                    expr = match.group(1).strip()
+                    # Replace in the line
+                    old_pattern = expr + '.ToBigInteger()'
+                    new_pattern = f'(BigInteger)({expr})'
+                    lines[i] = line.replace(old_pattern, new_pattern)
+                else:
+                    # Last resort: just replace .ToBigInteger() with empty and wrap previous expression
+                    # Find the last identifier/expression before .ToBigInteger()
+                    match = re.search(r'([^=;\s]+)\s*\.ToBigInteger\(\)', line)
+                    if match:
+                        expr = match.group(1).strip()
+                        lines[i] = line.replace(f'{expr}.ToBigInteger()', f'(BigInteger)({expr})')
+        fixed_code = '\n'.join(lines)
+    
+    # Step 5: Final verification - if still has .ToBigInteger(), log warning
+    if '.ToBigInteger()' in fixed_code:
+        errors.append("Warning: Some .ToBigInteger() patterns could not be automatically fixed")
+    
+    # Check 3.5: Fix invalid null-coalescing operator (??) with ByteString
+    # Pattern: storageMap.Get(key) ?? 0 or value ?? 0 where value is ByteString
+    # This is invalid because ByteString ?? int doesn't work in C#
+    # Should be: ByteString value = storageMap.Get(key); return value is null ? 0 : (BigInteger)value;
+    
+    # Fix patterns like: var x = storageMap.Get(key) ?? 0;
+    # Or: return storageMap.Get(key) ?? 0;
+    lines = fixed_code.split('\n')
+    i = 0
+    while i < len(lines):
+        line = lines[i]
+        if '??' in line:
+            # Check if this line contains a storage operation (ByteString)
+            is_storage_op = '.Get(' in line or 'Map' in line or 'Storage' in line
+            
+            if is_storage_op:
+                # Pattern 1: var x = expr ?? number;
+                match = re.search(r'(var\s+\w+\s*=\s*)([^;]+?)\s*\?\?\s*(\d+)\s*;', line)
+                if match:
+                    var_decl = match.group(1)  # "var x = "
+                    expr = match.group(2).strip()  # storageMap.Get(key)
+                    default = match.group(3).strip()  # 0
+                    var_name_match = re.search(r'var\s+(\w+)', var_decl)
+                    if var_name_match:
+                        var_name = var_name_match.group(1)
+                        temp_var = f'temp_{var_name}'
+                        indent = len(line) - len(line.lstrip())
+                        # Replace the line with two lines
+                        lines[i] = f'{" " * indent}ByteString {temp_var} = {expr};'
+                        lines.insert(i + 1, f'{" " * indent}{var_decl}{temp_var} is null ? {default} : (BigInteger){temp_var};')
+                        i += 1  # Skip the inserted line
+                        continue
+                
+                # Pattern 2: return expr ?? number;
+                match = re.search(r'return\s+([^;]+?)\s*\?\?\s*(\d+)\s*;', line)
+                if match:
+                    expr = match.group(1).strip()
+                    default = match.group(2).strip()
+                    temp_var = 'temp_return'
+                    indent = len(line) - len(line.lstrip())
+                    # Replace the line with two lines
+                    lines[i] = f'{" " * indent}ByteString {temp_var} = {expr};'
+                    lines.insert(i + 1, f'{" " * indent}return {temp_var} is null ? {default} : (BigInteger){temp_var};')
+                    i += 1  # Skip the inserted line
+                    continue
+                
+                # Pattern 3: Any expression ?? number (fallback)
+                # Replace with ternary operator inline
+                match = re.search(r'([a-zA-Z_][a-zA-Z0-9_.]*(?:\([^)]*\))*)\s*\?\?\s*(\d+)', line)
+                if match:
+                    expr = match.group(1).strip()
+                    default = match.group(2).strip()
+                    # Replace with ternary operator
+                    lines[i] = line.replace(
+                        f'{expr} ?? {default}',
+                        f'({expr} is null ? {default} : (BigInteger){expr})'
+                    )
+        i += 1
+    
+    fixed_code = '\n'.join(lines)
+    
+    # Check 4: Storage variables use StorageMap correctly
     if "StorageMap" in fixed_code and "Storage.CurrentContext" not in fixed_code:
         errors.append("StorageMap should use Storage.CurrentContext")
         # Try to fix common patterns
@@ -59,12 +219,16 @@ def validate_contract(contract_code: str) -> Tuple[bool, List[str], str]:
             "new StorageMap(Storage.CurrentContext"
         )
     
-    # Check 4: Remove DisplayName attributes (not available in Neo N3)
-    import re
-    # Remove all [DisplayName("...")] lines
+    # Check 5: Remove DisplayName attributes (not available in Neo N3)
+    # Remove all [DisplayName("...")] lines (standalone)
     fixed_code = re.sub(r'\s*\[DisplayName\([^)]+\)\]\s*\n', '', fixed_code)
-    # Also remove DisplayName from class attributes (inline)
-    fixed_code = re.sub(r'\s*\[DisplayName\([^)]+\)\]\s*', '', fixed_code)
+    # Remove DisplayName from class attributes (inline with other attributes)
+    fixed_code = re.sub(r'\[DisplayName\([^)]+\)\]\s*,?\s*', '', fixed_code)
+    # Remove DisplayNameAttribute references
+    fixed_code = re.sub(r'\s*\[DisplayNameAttribute\([^)]+\)\]\s*\n', '', fixed_code)
+    fixed_code = re.sub(r'\[DisplayNameAttribute\([^)]+\)\]\s*,?\s*', '', fixed_code)
+    # Remove any remaining DisplayName references
+    fixed_code = re.sub(r'\s*DisplayName\s*', '', fixed_code)
     
     # Check 5: Owner check uses Runtime.CheckWitness
     if "IsOwner" in fixed_code and "Runtime.CheckWitness" not in fixed_code:

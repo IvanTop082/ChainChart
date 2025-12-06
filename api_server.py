@@ -5,7 +5,7 @@ Handles workflow execution requests from the UI.
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from typing import Dict, Any, List, Optional
 from pathlib import Path
 import asyncio
@@ -106,9 +106,15 @@ class ExportContractResponse(BaseModel):
     manifest: Dict[str, Any]
     nef: str
     success: bool
-    error: str = None
-    nef_path: str = None  # Path to saved NEF file
-    manifest_path: str = None  # Path to saved manifest file
+    error: Optional[str] = None
+    nef_path: Optional[str] = None  # Path to saved NEF file
+    manifest_path: Optional[str] = None  # Path to saved manifest file
+    contract_path: Optional[str] = None  # Path to saved C# contract file
+    compile_warning: Optional[str] = None  # Warning message if compiler not installed
+    
+    model_config = {
+        "validate_assignment": True,
+    }
 
 
 def transform_ui_to_backend_format(ui_diagram: Dict[str, Any]) -> Dict[str, Any]:
@@ -721,21 +727,26 @@ async def deploy_contract_endpoint(request: ContractDeployRequest = ContractDepl
 @app.post("/export-contract", response_model=ExportContractResponse)
 async def export_contract(request: ContractGenerateRequest):
     """
-    Export complete Neo contract: generate, compile, and return contract + manifest + NEF.
+    Export complete Neo contract: generate using SpoonOS LLM, compile, and return contract + manifest + NEF.
     
     This endpoint:
-    1. Generates C# contract from ChainChart diagram
-    2. Compiles contract to NEF + manifest
-    3. Returns all three in one response
+    1. Transforms UI diagram format to backend format
+    2. Uses SpoonOS LLM (ContractAgent) to generate C# contract from diagram (including edge-based control flow)
+    3. Validates and patches contract
+    4. Compiles contract to NEF + manifest
+    5. Saves files to generated_contracts/ directory
+    6. Returns all three in one response
     
     Request body should contain:
         - nodes: array of node objects
-        - edges: array of edge objects
+        - edges: array of edge objects (CRITICAL: edges define function logic and control flow)
     
     Returns:
         - contract: Complete C# contract source code
         - manifest: JSON manifest object
         - nef: Base64 encoded NEF file
+        - nef_path: Path to saved NEF file
+        - manifest_path: Path to saved manifest file
     """
     try:
         # Transform UI format to backend format
@@ -750,18 +761,26 @@ async def export_contract(request: ContractGenerateRequest):
         if not backend_diagram["nodes"]:
             raise HTTPException(status_code=400, detail="Diagram must contain at least one node")
         
-        # Step 1: Generate contract using deterministic generator
-        contract_code = generate_contract_from_diagram(backend_diagram)
+        # Step 1: Generate contract using SpoonOS LLM (ContractAgent)
+        contract_agent = ContractAgent()
+        contract_code = await contract_agent.generate_contract(backend_diagram)
         
         # Step 2: Create persistent directory for contract files
         generated_contracts_dir = Path("generated_contracts")
         generated_contracts_dir.mkdir(exist_ok=True)
         
         # Step 2.5: Validate and patch contract
-        is_valid, validation_errors, patched_contract = validate_contract(contract_code)
-        if not is_valid and validation_errors:
-            # Auto-patch the contract
-            contract_code = patch_contract(contract_code)
+        # Always patch the contract to fix common issues (missing using statements, etc.)
+        import logging
+        logger = logging.getLogger(__name__)
+        logger.info("Patching contract to add missing using statements...")
+        contract_code = patch_contract(contract_code)
+        logger.info("Contract patched successfully")
+        
+        # Validate again to check for any remaining issues
+        is_valid, validation_errors, _ = validate_contract(contract_code)
+        if validation_errors:
+            logger.warning(f"Validation warnings: {validation_errors}")
         
         # Step 3: Write contract to temporary file for compilation
         # (Compiler needs a .cs file, but we'll save the compiled outputs to persistent directory)
@@ -770,25 +789,54 @@ async def export_contract(request: ContractGenerateRequest):
             contract_file = temp_path / "Contract.cs"
             contract_file.write_text(contract_code, encoding='utf-8')
             
-            # Step 4: Compile contract
+            # Step 4: Save C# contract to persistent directory (always save, even if compilation fails)
+            persistent_contract_file = generated_contracts_dir / "Contract.cs"
+            persistent_contract_file.write_text(contract_code, encoding='utf-8')
+            
+            # Step 5: Try to compile contract (optional - if compiler not installed, just return C# code)
             nef_path, manifest_path, compile_success, compile_errors = compile_neo_contract(str(contract_file))
             
-            # Check if compilation actually succeeded
+            # If compilation failed, that's OK - we'll just return the C# code
+            # The user can compile it manually later or install the compiler
             if not compile_success:
-                error_msg = "Compilation failed. "
-                if compile_errors:
-                    error_msg += "Errors: " + "; ".join(compile_errors[:3])  # Show first 3 errors
-                else:
-                    error_msg += "Check that Neo compiler (nccs) is installed."
-                return ExportContractResponse(
-                    contract=contract_code,
-                    manifest={},
-                    nef="",
-                    success=False,
-                    error=error_msg,
-                    nef_path=None,
-                    manifest_path=None
+                # Check if it's just a missing compiler issue (not a syntax error)
+                is_missing_compiler = any(
+                    "not found" in str(e).lower() or 
+                    "not detected" in str(e).lower() or
+                    "install" in str(e).lower() or
+                    "devpack" in str(e).lower()
+                    for e in compile_errors
                 )
+                
+                if is_missing_compiler:
+                    # Compiler not installed - that's fine, just return the C# code
+                    logger.info("Neo compiler not installed - returning C# code only. User can compile manually later.")
+                    return ExportContractResponse(
+                        contract=contract_code,
+                        manifest={},
+                        nef="",
+                        success=True,  # Still success - we generated the code!
+                        error=None,
+                        nef_path=None,
+                        manifest_path=None,
+                        contract_path=str(persistent_contract_file),
+                        compile_warning="Neo compiler not installed. C# contract saved to generated_contracts/Contract.cs. To compile: Install Neo.Compiler.CSharp with 'dotnet tool install -g Neo.Compiler.CSharp', then run 'nccs generated_contracts/Contract.cs'"
+                    )
+                else:
+                    # Actual compilation errors (syntax issues) - return with error
+                    error_msg = "Compilation failed. "
+                    if compile_errors:
+                        error_msg += "Errors: " + "; ".join(compile_errors[:3])  # Show first 3 errors
+                    return ExportContractResponse(
+                        contract=contract_code,
+                        manifest={},
+                        nef="",
+                        success=False,
+                        error=error_msg,
+                        nef_path=None,
+                        manifest_path=None,
+                        contract_path=str(persistent_contract_file)
+                    )
             
             # Check if files exist and are valid (not empty/mock)
             if not nef_path or not manifest_path:
@@ -842,19 +890,45 @@ async def export_contract(request: ContractGenerateRequest):
                     )
             
             # Step 6: Read compiled files for response
-            compiled_data = read_compiled_files(str(persistent_nef_path), str(persistent_manifest_path))
+            try:
+                compiled_data = read_compiled_files(str(persistent_nef_path), str(persistent_manifest_path))
+            except Exception as read_error:
+                import logging
+                logger = logging.getLogger(__name__)
+                logger.error(f"Error reading compiled files: {read_error}")
+                # Convert paths to strings, handling None case
+                nef_path_val = str(persistent_nef_path) if persistent_nef_path is not None else None
+                manifest_path_val = str(persistent_manifest_path) if persistent_manifest_path is not None else None
+                
+                return ExportContractResponse(
+                    contract=contract_code,
+                    manifest={},
+                    nef="",
+                    success=False,
+                    error=f"Failed to read compiled files: {str(read_error)}",
+                    nef_path=nef_path_val,
+                    manifest_path=manifest_path_val
+                )
+            
+            # Ensure paths are strings (not None)
+            nef_path_str = str(persistent_nef_path) if persistent_nef_path is not None else None
+            manifest_path_str = str(persistent_manifest_path) if persistent_manifest_path is not None else None
             
             return ExportContractResponse(
                 contract=contract_code,
-                manifest=compiled_data["manifest"],
-                nef=compiled_data["nef"],
+                manifest=compiled_data.get("manifest", {}),
+                nef=compiled_data.get("nef", ""),
                 success=True,
-                nef_path=str(persistent_nef_path),
-                manifest_path=str(persistent_manifest_path)
+                nef_path=nef_path_str,
+                manifest_path=manifest_path_str
             )
         
     except Exception as e:
         import traceback
+        import logging
+        logger = logging.getLogger(__name__)
+        logger.error(f"Error in export_contract: {e}")
+        logger.error(traceback.format_exc())
         return ExportContractResponse(
             contract="",
             manifest={},

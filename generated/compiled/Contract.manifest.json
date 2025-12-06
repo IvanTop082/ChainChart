@@ -1,0 +1,50 @@
+{
+  "name": "ChainChartContract",
+  "groups": [],
+  "features": {},
+  "supportedstandards": [],
+  "abi": {
+    "methods": [
+      {
+        "name": "_initialize",
+        "parameters": [],
+        "returntype": "Void",
+        "offset": 0,
+        "safe": false
+      },
+      {
+        "name": "GetVersion",
+        "parameters": [],
+        "returntype": "Integer",
+        "safe": true
+      },
+      {
+        "name": "SetVersion",
+        "parameters": [
+          { "name": "v", "type": "Integer" }
+        ],
+        "returntype": "Void",
+        "safe": false
+      }
+    ],
+    "events": [
+      {
+        "name": "Initialized",
+        "parameters": [
+          { "name": "message", "type": "String" }
+        ]
+      }
+    ]
+  },
+  "permissions": [
+    {
+      "contract": "*",
+      "methods": "*"
+    }
+  ],
+  "trusts": [],
+  "extra": {
+    "Author": "ChainChart",
+    "Description": "Generated from ChainChart diagram"
+  }
+}

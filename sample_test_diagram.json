@@ -1,0 +1,31 @@
+{
+  "nodes": [
+    {
+      "id": "node1",
+      "type": "function",
+      "label": "Read Counter",
+      "value": "read_neo_state",
+      "metadata": {
+        "tool": "read_neo_state",
+        "params": {
+          "key": "value"
+        }
+      }
+    },
+    {
+      "id": "node2",
+      "type": "event",
+      "label": "Display Result",
+      "value": "result",
+      "metadata": {}
+    }
+  ],
+  "edges": [
+    {
+      "id": "edge1",
+      "from": "node1",
+      "to": "node2"
+    }
+  ]
+}
+

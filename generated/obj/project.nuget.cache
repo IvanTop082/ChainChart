@@ -1,0 +1,10 @@
+{
+  "version": 2,
+  "dgSpecHash": "hOLfOd0ynZc=",
+  "success": true,
+  "projectFilePath": "C:\\Users\\vanys\\ChainChart\\generated\\Contract.csproj",
+  "expectedPackageFiles": [
+    "C:\\Users\\vanys\\.nuget\\packages\\neo.smartcontract.framework\\3.8.1\\neo.smartcontract.framework.3.8.1.nupkg.sha512"
+  ],
+  "logs": []
+}

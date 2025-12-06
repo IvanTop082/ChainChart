@@ -1,0 +1,6 @@
+C:\Users\vanys\ChainChart\generated\obj\Debug\net9.0\Contract.csproj.AssemblyReference.cache
+C:\Users\vanys\ChainChart\generated\obj\Debug\net9.0\Contract.GeneratedMSBuildEditorConfig.editorconfig
+C:\Users\vanys\ChainChart\generated\obj\Debug\net9.0\Contract.AssemblyInfoInputs.cache
+C:\Users\vanys\ChainChart\generated\obj\Debug\net9.0\Contract.AssemblyInfo.cs
+C:\Users\vanys\ChainChart\generated\obj\Debug\net9.0\Contract.csproj.CoreCompileInputs.cache
+C:\Users\vanys\ChainChart\generated\obj\Debug\net9.0\Contract.sourcelink.json

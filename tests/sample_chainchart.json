@@ -1,0 +1,14 @@
+{
+  "nodes": [
+    { "id": "state1", "type": "state", "label": "PlayerHP", "value": 100 },
+    { "id": "func1", "type": "function", "label": "DamagePlayer", "metadata": { "name": "DamagePlayer" } },
+    { "id": "op1", "type": "operation", "label": "SubtractHP", "value": "PlayerHP - 10", "metadata": { "op": "-", "operand_a": "PlayerHP", "operand_b": "10" } },
+    { "id": "event1", "type": "event", "label": "Log", "metadata": { "name": "Log" } }
+  ],
+  "edges": [
+    { "from": "state1", "to": "func1" },
+    { "from": "func1", "to": "op1" },
+    { "from": "op1", "to": "event1" }
+  ]
+}
+

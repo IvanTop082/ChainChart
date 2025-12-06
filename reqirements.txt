@@ -1,2 +1,5 @@
 spoon-ai-sdk
+fastapi
+uvicorn[standard]
+pydantic
 

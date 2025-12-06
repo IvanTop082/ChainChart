@@ -43,3 +43,4 @@ def has_contract_hash() -> bool:
     hash_str = NEO_CONTRACT_HASH.replace("0x", "").replace("0X", "")
     return len(hash_str) == 40 and all(c in '0123456789abcdefABCDEF' for c in hash_str)
 
+

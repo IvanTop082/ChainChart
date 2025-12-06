@@ -71,17 +71,31 @@ def deploy_via_rpc_raw(nef_path: str, manifest_path: str, private_key: Optional[
             }
         ]
         
-        # Use RPC invokecontract to build and sign the transaction
-        # This RPC method handles transaction building and signing automatically
+        # Use invokescript to test the script first, then sendrawtransaction for actual deployment
+        # Note: invokecontract doesn't support deployment directly - we need to build the transaction manually
+        # For now, use invokescript to validate, then we'll need to build and sign the transaction properly
+        
+        # Build the deployment script manually
+        # ContractManagement.deploy expects: (nef: ByteString, manifest: ByteString)
+        from neo3_contract_builder import ScriptBuilder
+        
+        sb = ScriptBuilder()
+        # Push manifest first (as per Neo N3 convention)
+        manifest_bytes = json.dumps(manifest_content).encode('utf-8')
+        sb.emit_push(manifest_bytes)
+        # Push NEF
+        sb.emit_push(nef_content)
+        # Call ContractManagement.deploy
+        contract_hash_hex = "fffdc93764dbaddd97c48f252a53ea4643faa3fd"
+        contract_hash_bytes = bytes.fromhex(contract_hash_hex)[::-1]  # little-endian
+        sb.emit_contract_call(contract_hash_bytes, "deploy")
+        script = sb.to_array()
+        
+        # Use invokescript to test (read-only, doesn't deploy)
         rpc_payload = {
             "jsonrpc": "2.0",
-            "method": "invokecontract",
-            "params": [
-                contract_mgmt_hash,
-                "deploy",
-                params,
-                [private_key]  # Signers - RPC will handle signing
-            ],
+            "method": "invokescript",
+            "params": [script.hex()],
             "id": 1
         }
         

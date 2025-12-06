@@ -1,0 +1,14 @@
+/* General */
+
+html,
+body {
+	height: 100%;
+	margin: 0;
+	padding: 0;
+}
+
+/* Table override */
+
+.ant-table-thead > tr > th {
+	font-weight: bold !important;
+}

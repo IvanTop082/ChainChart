@@ -1,0 +1,14 @@
+{
+  "name": "chainchart-deployment",
+  "version": "1.0.0",
+  "description": "Deploy Neo N3 contracts using neon-js (exactly like NeoNova)",
+  "main": "deploy_with_neonjs.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "dependencies": {
+    "@cityofzion/neon-js": "^5.8.0"
+  },
+  "author": "",
+  "license": "ISC"
+}

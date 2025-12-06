@@ -587,61 +587,85 @@ async def deploy_contract_endpoint(request: ContractDeployRequest = ContractDepl
         if str(manifest_file) != str(target_manifest):
             shutil.copy2(manifest_file, target_manifest)
         
-        # Step 3: Deploy to testnet using pure RPC deployment
-        # Use the new RPC deployment system (bypasses neo-mamba signing issues)
+        # Step 3: Deploy to testnet using neon-js (EXACTLY like NeoNova)
+        # NeoNova uses neon-js's experimental.deployContract - we use the same library!
         try:
-            from neo_rpc_deploy import deploy_contract as rpc_deploy_contract
-            import sys
-            from io import StringIO
+            # Try neon-js approach first (EXACTLY like NeoNova - same library!)
+            try:
+                from generator.neonova_deploy_neonjs import deploy_contract_with_neonjs
+                logger.info("🚀 Attempting deployment using neon-js (EXACTLY like NeoNova)...")
+                deploy_result = deploy_contract_with_neonjs(
+                    str(target_nef),
+                    str(target_manifest),
+                    private_key,
+                    os.getenv("NEO_RPC_URL", "http://seed3t5.neo.org:20332")
+                )
+                if deploy_result.get("success") and deploy_result.get("tx_hash"):
+                    tx_hash = deploy_result.get("tx_hash")
+                    logger.info(f"✅ neon-js deployment successful! TX: {tx_hash}")
+                    return ContractDeployResponse(
+                        tx_hash=str(tx_hash),
+                        success=True,
+                        error=None,
+                        mock=False
+                    )
+                elif deploy_result.get("error"):
+                    logger.warning(f"⚠️  neon-js deployment failed: {deploy_result.get('error')}")
+                    logger.warning("⚠️  Falling back to neo-mamba approach...")
+            except ImportError:
+                logger.warning("⚠️  neon-js deployment not available (Node.js/neon-js not installed)")
+                logger.warning("⚠️  Install Node.js and run: npm install @cityofzion/neon-js")
+                logger.warning("⚠️  Falling back to neo-mamba approach...")
+            except Exception as neonjs_error:
+                logger.warning(f"⚠️  neon-js deployment error: {neonjs_error}")
+                logger.warning("⚠️  Falling back to neo-mamba approach...")
+            
+            # Fallback to neo-mamba approach
+            from generator.neonova_deploy import deploy_contract_neonova_style
             import logging
             logger = logging.getLogger(__name__)
             
-            logger.info("🚀 Attempting pure RPC deployment (bypasses neo-mamba signing issues)...")
+            # Get private key from request or environment
+            private_key = None
+            if request and hasattr(request, 'private_key') and request.private_key:
+                private_key = request.private_key
+            else:
+                # Try to load from environment/config
+                try:
+                    from deployment.config import NEO_PRIVATE_KEY
+                    private_key = NEO_PRIVATE_KEY
+                except ImportError:
+                    import os
+                    from dotenv import load_dotenv
+                    load_dotenv()
+                    private_key = os.getenv("NEO_PRIVATE_KEY")
             
-            # Capture stdout to get transaction hash
-            old_stdout = sys.stdout
-            sys.stdout = captured_output = StringIO()
+            if not private_key:
+                raise ValueError("NEO_PRIVATE_KEY required for deployment. Set it in .env file or provide in request.")
             
-            try:
-                # Deploy using pure RPC (no neo-mamba signing issues)
-                deploy_result = rpc_deploy_contract()
-                output = captured_output.getvalue()
-                logger.info(f"RPC deployment output: {output[:500]}")  # Log first 500 chars
-            except Exception as rpc_deploy_error:
-                output = captured_output.getvalue()
-                logger.error(f"Pure RPC deployment failed: {rpc_deploy_error}")
-                logger.error(f"RPC deployment output: {output}")
-                raise  # Re-raise to trigger fallback
-            finally:
-                sys.stdout = old_stdout
+            logger.info("🚀 Attempting NeoNova-style deployment (using neo-mamba, matches neon-js format)...")
             
-            # Extract transaction hash from result or output
-            tx_hash = None
-            if isinstance(deploy_result, dict):
+            # Deploy using neo-mamba (same approach as NeoNova)
+            deploy_result = deploy_contract_neonova_style(
+                str(target_nef),
+                str(target_manifest),
+                private_key,
+                os.getenv("NEO_RPC_URL", "http://seed3t5.neo.org:20332")
+            )
+            
+            if deploy_result.get("success") and deploy_result.get("tx_hash"):
                 tx_hash = deploy_result.get("tx_hash")
-            elif isinstance(deploy_result, str):
-                tx_hash = deploy_result
-            
-            # Try to extract from output if not in result
-            if not tx_hash and "Transaction Hash:" in output:
-                for line in output.split('\n'):
-                    if "Transaction Hash:" in line:
-                        tx_hash = line.split("Transaction Hash:")[-1].strip()
-                        break
-            
-            if tx_hash:
-                logger.info(f"✅ Pure RPC deployment successful! TX: {tx_hash}")
+                logger.info(f"✅ NeoNova-style deployment successful! TX: {tx_hash}")
                 return ContractDeployResponse(
-                    tx_hash=tx_hash,
+                    tx_hash=str(tx_hash),
                     success=True,
                     error=None,
                     mock=False
                 )
             else:
-                # Fallback to old method
-                error_msg = f"RPC deployment didn't return transaction hash. Output: {output[:200]}"
-                logger.warning(error_msg)
-                raise Exception(error_msg)
+                error_msg = deploy_result.get("error", "Unknown deployment error")
+                logger.error(f"NeoNova-style deployment failed: {error_msg}")
+                raise Exception(f"Deployment failed: {error_msg}")
                 
         except Exception as rpc_error:
             # Log the error before falling back
@@ -674,6 +698,81 @@ async def deploy_contract_endpoint(request: ContractDeployRequest = ContractDepl
                     tx_hash=None,
                     success=False,
                     error=f"Deployment failed: Private key issue. Check your .env file has NEO_PRIVATE_KEY set. Error: {error_msg}",
+                    mock=False
+                )
+            
+            # Check if it's a script format issue - try NeoNova's method
+            if "Invalid transaction script" in error_msg or "InvalidScript" in error_msg:
+                logger.warning("⚠️  RPC deployment failed, trying NeoNova-compatible method...")
+                try:
+                    from generator.neonova_deploy import deploy_contract_neonova_style
+                    
+                    # Get private key - try multiple sources
+                    private_key = None
+                    if request and request.private_key:
+                        private_key = request.private_key
+                    else:
+                        # Try deployment.config first
+                        try:
+                            from deployment.config import NEO_PRIVATE_KEY
+                            private_key = NEO_PRIVATE_KEY
+                        except ImportError:
+                            pass
+                        
+                        # Try environment variable
+                        if not private_key:
+                            private_key = os.getenv("NEO_PRIVATE_KEY")
+                        
+                        # Try loading .env file directly
+                        if not private_key:
+                            try:
+                                from dotenv import load_dotenv
+                                load_dotenv(override=True)  # Force reload
+                                private_key = os.getenv("NEO_PRIVATE_KEY")
+                            except ImportError:
+                                pass
+                        
+                        # Clean up private key (remove quotes, whitespace, trailing characters)
+                        if private_key:
+                            private_key = private_key.strip().strip('"').strip("'")
+                            # Remove trailing 'd' if it's a typo (WIF keys are typically 52 chars)
+                            if len(private_key) > 52 and private_key.endswith('d'):
+                                private_key = private_key.rstrip('d')
+                    
+                    if private_key:
+                        # Get RPC URL - ensure os is accessible
+                        import os as os_module
+                        rpc_url_for_neonova = os_module.getenv("NEO_RPC_URL", "http://seed3t5.neo.org:20332")
+                        
+                        neonova_result = deploy_contract_neonova_style(
+                            str(nef_file),
+                            str(manifest_file),
+                            private_key,
+                            rpc_url_for_neonova
+                        )
+                        
+                        if neonova_result.get("success"):
+                            logger.info("✅ NeoNova-compatible deployment successful!")
+                            return ContractDeployResponse(
+                                tx_hash=neonova_result.get("tx_hash"),
+                                success=True,
+                                error=None,
+                                mock=False
+                            )
+                        else:
+                            logger.warning(f"⚠️  NeoNova method also failed: {neonova_result.get('error')}")
+                except Exception as neonova_error:
+                    import traceback
+                    error_str = str(neonova_error)
+                    logger.warning(f"⚠️  NeoNova method not available: {error_str}")
+                    logger.debug(f"NeoNova error traceback: {traceback.format_exc()}")
+                
+                return ContractDeployResponse(
+                    tx_hash=None,
+                    success=False,
+                    error=f"Deployment failed: Invalid transaction script format. The deployment script builder needs fixing. "
+                          f"Your existing contract (0x305e80b49c9bc8a1ea7a4aea99c7ff95074131ab) is still working - you can use workflows without deploying again. "
+                          f"Original error: {error_msg}",
                     mock=False
                 )
             

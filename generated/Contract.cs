@@ -16,32 +16,18 @@ namespace ChainChartGenerated
         private static readonly UInt160 Owner = default;
 
         // Storage Variables
-        private static StorageMap NewstateMap => new StorageMap(Storage.CurrentContext, "New state");
-        private static BigInteger Newstate
+        private static StorageMap CounterMap => new StorageMap(Storage.CurrentContext, "Counter");
+        private static BigInteger Counter
         {
             get
             {
-                var value = NewstateMap.Get(ByteString.Empty);
+                var value = CounterMap.Get(ByteString.Empty);
                 return value is null ? 0 : (BigInteger)value;
             }
         }
-        private static void SetNewstate(BigInteger value)
+        private static void SetCounter(BigInteger value)
         {
-            NewstateMap.Put(ByteString.Empty, (ByteString)value);
-        }
-
-        private static StorageMap Newstate_node_1764998304967_266Map => new StorageMap(Storage.CurrentContext, "New state");
-        private static BigInteger Newstate_node_1764998304967_266
-        {
-            get
-            {
-                var value = Newstate_node_1764998304967_266Map.Get(ByteString.Empty);
-                return value is null ? 0 : (BigInteger)value;
-            }
-        }
-        private static void SetNewstate_node_1764998304967_266(BigInteger value)
-        {
-            Newstate_node_1764998304967_266Map.Put(ByteString.Empty, (ByteString)value);
+            CounterMap.Put(ByteString.Empty, (ByteString)value);
         }
 
         // Owner Check Modifier
@@ -51,12 +37,17 @@ namespace ChainChartGenerated
         }
 
         // Events
-        public static event Action<string> Log;
+        public static event Action<string> Newevent;
 
         // Functions
-        public static void _initialize()
+        public static void Increment()
         {
-            // Contract initialization
+            // TODO: Implement function logic based on connected nodes
+        }
+
+        public static void Newfunction()
+        {
+            // TODO: Implement function logic based on connected nodes
         }
 
     }

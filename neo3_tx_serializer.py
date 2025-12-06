@@ -158,8 +158,18 @@ class Neo3TransactionSerializer:
         result.extend(cls.serialize_attributes(tx.get("attributes", [])))
         
         # Script
-        script_b64 = tx.get("script", "")
-        script_bytes = base64.b64decode(script_b64)
+        script = tx.get("script", b"")
+        if isinstance(script, str):
+            # If it's a string, try to decode as base64 first, then as hex
+            try:
+                script_bytes = base64.b64decode(script)
+            except:
+                try:
+                    script_bytes = bytes.fromhex(script)
+                except:
+                    script_bytes = script.encode('utf-8')
+        else:
+            script_bytes = script
         result.extend(cls.serialize_var_bytes(script_bytes))
         
         # Witnesses (serialize unsigned transaction first, then add witnesses)

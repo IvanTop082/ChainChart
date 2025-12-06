@@ -174,14 +174,70 @@ class CallNeoContractTool(BaseTool):
             result = await rpc.invoke_function(contract_hash_uint, method, neo_args)
             
             print(f"✅ Method call successful")
-            print(f"   Gas consumed: {result.get('gas_consumed', 0)}")
+            
+            # Handle both dict-like and object-like responses
+            if hasattr(result, 'gas_consumed'):
+                # ExecutionResultResponse object
+                gas_consumed = result.gas_consumed
+                stack = result.stack if hasattr(result, 'stack') else []
+                state = result.state if hasattr(result, 'state') else 'UNKNOWN'
+            elif isinstance(result, dict):
+                # Dict response
+                gas_consumed = result.get('gas_consumed', 0)
+                stack = result.get("stack", [])
+                state = result.get("state", "UNKNOWN")
+            else:
+                # Fallback
+                gas_consumed = 0
+                stack = []
+                state = "UNKNOWN"
+            
+            print(f"   Gas consumed: {gas_consumed}")
+            print(f"   State: {state}")
+            
+            # Check if execution failed
+            if state == "FAULT":
+                # Try to get exception message
+                exception_msg = None
+                if hasattr(result, 'exception'):
+                    exception_msg = result.exception
+                elif hasattr(result, 'exception_message'):
+                    exception_msg = result.exception_message
+                
+                error_msg = f"Contract method '{method}' execution failed (FAULT state)"
+                if exception_msg:
+                    error_msg += f": {exception_msg}"
+                print(f"   ⚠️  {error_msg}")
+                # Still return success=False but with details
+                return {
+                    "status": "failed",
+                    "method": method,
+                    "args": args or [],
+                    "result": [],
+                    "gas_consumed": gas_consumed,
+                    "state": state,
+                    "error": error_msg,
+                    "raw_response": result
+                }
+            
+            # Extract stack values if available
+            stack_values = []
+            if stack:
+                for item in stack:
+                    if hasattr(item, 'value'):
+                        stack_values.append(item.value)
+                    elif isinstance(item, dict):
+                        stack_values.append(item.get('value', item))
+                    else:
+                        stack_values.append(item)
             
             return {
-                "status": "success",
+                "status": "success" if state == "HALT" else "failed",
                 "method": method,
                 "args": args or [],
-                "result": result.get("stack", []),
-                "gas_consumed": result.get("gas_consumed", 0),
+                "result": stack_values if stack_values else stack,
+                "gas_consumed": gas_consumed,
+                "state": state,
                 "raw_response": result
             }
                 

@@ -171,3 +171,4 @@ class ContractGenerateTool(BaseTool):
             "nodes": nodes
         }
 
+

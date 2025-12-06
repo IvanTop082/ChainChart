@@ -108,28 +108,40 @@ def rpc_call(method: str, params: list):
 
 def build_deploy_script(nef_bytes: bytes, manifest_str: str) -> bytes:
     """
-    Creates the NeoVM script for deployment.
+    Creates the NeoVM script for deployment - EXACTLY matching NeoNova's format.
     
-    Neo N3 ContractManagement.deploy expects: (nef: ByteString, manifest: ByteString)
-    Script format: PUSH nef PUSH manifest CALLT ContractManagement.deploy
+    NeoNova uses:
+    - NEF: ByteArray (Base64 encoded from serialized NEF)
+    - Manifest: String (JSON stringified)
+    
+    ContractManagement.deploy expects: (nef: ByteString, manifest: ByteString)
+    Stack is LIFO, so we push in reverse order:
+    1. Push manifest (will be on top)
+    2. Push NEF (below manifest)
+    3. CALLT ContractManagement.deploy
+    
+    This matches neon-js's script building exactly.
     """
     sb = ScriptBuilder()
     
-    # Push NEF as bytes first (ContractManagement.deploy expects nef, then manifest)
-    sb.emit_push(nef_bytes)
-    
-    # Push manifest as bytes (UTF-8 encoded JSON string)
+    # NeoNova format: manifest is a String (JSON stringified)
+    # Push manifest as UTF-8 bytes (will be on top of stack)
     manifest_bytes = manifest_str.encode('utf-8') if isinstance(manifest_str, str) else manifest_str
     sb.emit_push(manifest_bytes)
     
+    # NeoNova format: NEF is ByteArray (serialized NEF bytes)
+    # Push NEF as bytes (below manifest on stack)
+    sb.emit_push(nef_bytes)
+    
     # Call ContractManagement.deploy using CALLT
     # ContractManagement hash: 0xfffdc93764dbaddd97c48f252a53ea4643faa3fd
+    # NeoNova uses: NETWORK_DATA_MAP[network.type].nativeContracts['contractManagement']
     contract_hash_hex = "fffdc93764dbaddd97c48f252a53ea4643faa3fd"
     contract_hash_bytes = bytes.fromhex(contract_hash_hex)
-    # Neo N3 UInt160 is stored in little-endian format
+    # Neo N3 UInt160 is stored in little-endian format (reverse the hex string)
     contract_hash_bytes = contract_hash_bytes[::-1]
     
-    # Use CALLT to call contract method
+    # Use CALLT to call contract method (matches neon-js's invoke format)
     sb.emit_contract_call(contract_hash_bytes, "deploy")
     
     return sb.to_array()
@@ -196,7 +208,7 @@ def build_transaction(script: bytes, signer_hash: str) -> dict:
             }
         ],
         "attributes": [],
-        "script": base64.b64encode(script).decode(),
+        "script": script,  # Store as bytes, not base64
         "witnesses": []
     }
 
@@ -240,10 +252,10 @@ def sign_transaction(tx: dict, private_key: bytes) -> dict:
         invocation_script = bytes([0x0E]) + sig_len.to_bytes(2, 'little') + sig  # 0x0E = PUSHDATA2
     
     # Build verification script for ECDSA
-    # Neo N3 standard verification for single signature uses CHECKMULTISIG:
-    # PUSH 1 (0x51) PUSH 1 (0x51) PUSHDATA1 (0x0D) <33-byte pubkey> CHECKMULTISIG (0x41)
-    # This means: require 1 signature from 1 public key
-    verification_script = bytes([0x51, 0x51, 0x0D, 33]) + pub_key_bytes + bytes([0x41])
+    # Neo N3 standard verification for single signature uses CHECKSIG:
+    # PUSHDATA1 (0x0D) <33-byte pubkey> CHECKSIG (0xAC)
+    # This is the standard format for single signature verification
+    verification_script = bytes([0x0D, 33]) + pub_key_bytes + bytes([0xAC])
     
     # Add witness
     tx["witnesses"] = [{
@@ -320,34 +332,44 @@ def deploy_contract():
     print(f"   Script size: {len(script)} bytes")
     print()
 
-    # Build transaction with signers
-    print("📝 Building transaction...")
-    tx = build_transaction(script, signer_hash)
+    # Build transaction using invokescript to get the exact format from RPC
+    print("📝 Building transaction using RPC invokescript...")
+    script_b64 = base64.b64encode(script).decode()
     
-    # Try to get fee estimates from RPC using invokescript
-    print("   Getting fee estimates from RPC...")
     try:
-        script_b64 = base64.b64encode(script).decode()
         invoke_result = rpc_call("invokescript", [script_b64])
         
         if invoke_result and "tx" in invoke_result:
+            # Use the transaction structure from RPC - this ensures correct format
             tx_from_rpc = invoke_result["tx"]
-            # Use RPC-provided fees and validUntilBlock
-            if "systemFee" in tx_from_rpc:
-                tx["systemFee"] = str(tx_from_rpc["systemFee"])
-            if "networkFee" in tx_from_rpc:
-                tx["networkFee"] = str(tx_from_rpc["networkFee"])
-            if "validUntilBlock" in tx_from_rpc:
-                tx["validUntilBlock"] = tx_from_rpc["validUntilBlock"]
-            if "nonce" in tx_from_rpc:
-                tx["nonce"] = tx_from_rpc["nonce"]
-            print("   ✅ Got fee estimates from RPC")
+            print("   ✅ Got transaction structure from RPC")
+            
+            # Build our transaction dict using RPC's structure
+            tx = {
+                "version": tx_from_rpc.get("version", 0),
+                "nonce": tx_from_rpc.get("nonce", 0),
+                "systemFee": str(tx_from_rpc.get("systemFee", 0)),
+                "networkFee": str(tx_from_rpc.get("networkFee", 0)),
+                "validUntilBlock": tx_from_rpc.get("validUntilBlock", 0),
+                "signers": [
+                    {
+                        "account": signer_hash,
+                        "scopes": "CalledByEntry"
+                    }
+                ],
+                "attributes": tx_from_rpc.get("attributes", []),
+                "script": script,  # Use raw bytes
+                "witnesses": []
+            }
+            print("   Transaction structure created from RPC")
         else:
-            print("   ⚠️  Could not get fee estimates, using defaults")
+            # Fallback to manual building if invokescript doesn't return tx
+            print("   ⚠️  RPC didn't return transaction structure, using manual build")
+            tx = build_transaction(script, signer_hash)
     except Exception as e:
-        print(f"   ⚠️  Could not get fee estimates: {e}, using defaults")
+        print(f"   ⚠️  Could not get transaction from RPC: {e}, using manual build")
+        tx = build_transaction(script, signer_hash)
     
-    print("   Transaction structure created")
     print()
 
     # Sign transaction

@@ -9,10 +9,10 @@ namespace NeoContract
 {
     [ManifestExtra("Author", "Spoon AI")]
     [ManifestExtra("Email", "")]
-    [ManifestExtra("Description", "Auto-generated contract from ChainChart diagram")]
+    [ManifestExtra("Description", "Auto-generated contract from ChainChart")]
     public class Contract : SmartContract
     {
-        // StorageMap for state variable
+        // StorageMap for Counter
         private static readonly StorageMap CounterMap = new(Storage.CurrentContext, "Counter");
 
         // Event declaration
@@ -25,16 +25,15 @@ namespace NeoContract
             return value is null ? 0 : (BigInteger)value;
         }
 
-        // Increment function: Counter = Counter + 1
+        // Increment function: Counter += 1
         public static void Increment()
         {
-            ByteString value = CounterMap.Get("value");
-            BigInteger counter = value is null ? 0 : (BigInteger)value;
-            counter = counter + 1;
-            CounterMap.Put("value", counter);
+            BigInteger current = Counter();
+            BigInteger updated = current + 1;
+            CounterMap.Put("value", updated);
         }
 
-        // Newfunction: emits NewEvent
+        // Newfunction: emits New event
         public static void Newfunction()
         {
             NewEvent();

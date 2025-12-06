@@ -25,6 +25,13 @@ import os
 import json
 import shutil
 
+# Load .env file at startup
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except ImportError:
+    pass  # dotenv not installed, will use environment variables only
+
 app = FastAPI(title="ChainChart API", version="1.0.0")
 
 # CORS middleware to allow UI to connect
@@ -55,6 +62,69 @@ async def get_generated_file(filename: str):
         raise HTTPException(status_code=403, detail="Access denied")
     
     return FileResponse(str(file_path))
+
+
+@app.get("/api/contract/latest")
+async def get_latest_contract():
+    """
+    Get the latest generated NEF and manifest files.
+    Returns both as base64-encoded NEF and JSON manifest.
+    """
+    import base64
+    import os
+    
+    # Get absolute path for better error messages
+    nef_path = generated_contracts_dir / "contract.nef"
+    manifest_path = generated_contracts_dir / "contract.manifest.json"
+    
+    # Resolve to absolute paths
+    abs_nef_path = nef_path.resolve()
+    abs_manifest_path = manifest_path.resolve()
+    
+    # Check if directory exists
+    if not generated_contracts_dir.exists():
+        raise HTTPException(
+            status_code=404, 
+            detail=f"Generated contracts directory not found at: {generated_contracts_dir.resolve()}. Please generate a contract first using the /export-contract endpoint."
+        )
+    
+    # Check if files exist with helpful error messages
+    if not nef_path.exists():
+        # List what files are in the directory for debugging
+        existing_files = list(generated_contracts_dir.glob("*")) if generated_contracts_dir.exists() else []
+        file_list = ", ".join([f.name for f in existing_files[:5]]) if existing_files else "none"
+        raise HTTPException(
+            status_code=404, 
+            detail=f"NEF file not found at: {abs_nef_path}. Please click 'Generate Smart Contract' first. Existing files in directory: {file_list}"
+        )
+    
+    if not manifest_path.exists():
+        raise HTTPException(
+            status_code=404, 
+            detail=f"Manifest file not found at: {abs_manifest_path}. Please click 'Generate Smart Contract' first."
+        )
+    
+    try:
+        # Read NEF file and encode as base64
+        with open(nef_path, 'rb') as f:
+            nef_bytes = f.read()
+            if len(nef_bytes) == 0:
+                raise HTTPException(status_code=500, detail="NEF file is empty. Contract compilation may have failed.")
+            nef_base64 = base64.b64encode(nef_bytes).decode('utf-8')
+        
+        # Read manifest file as JSON
+        with open(manifest_path, 'r', encoding='utf-8') as f:
+            manifest_json = json.load(f)
+        
+        return {
+            "nefBase64": nef_base64,
+            "manifest": manifest_json,
+            "success": True
+        }
+    except json.JSONDecodeError as e:
+        raise HTTPException(status_code=500, detail=f"Failed to parse manifest JSON: {str(e)}")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to read contract files: {str(e)}")
 
 
 class DiagramRequest(BaseModel):
@@ -112,6 +182,7 @@ class ContractDeployRequest(BaseModel):
     nef: str = None  # Base64 encoded NEF (optional, will read from disk if not provided)
     manifest: Dict[str, Any] = None  # Manifest JSON (optional, will read from disk if not provided)
     private_key: str = None  # Optional private key for signing
+    test_mode: bool = False  # TEMPORARY: If True, use TestDeploy contract from bin/sc/ for testing
 
 
 class ContractDeployResponse(BaseModel):
@@ -568,35 +639,58 @@ async def deploy_contract_endpoint(request: ContractDeployRequest = ContractDepl
         - success: True if deployment succeeded
         - mock: True if mock deployment (neo-mamba not available)
     """
+    import logging
+    logger = logging.getLogger(__name__)
+    
     try:
+        # Define generated_contracts_dir at the start (needed for both test mode and normal mode)
         generated_contracts_dir = Path("generated_contracts")
-        default_nef = generated_contracts_dir / "contract.nef"
-        default_manifest = generated_contracts_dir / "contract.manifest.json"
         
-        # Determine source of NEF and manifest
-        if request and request.nef and request.manifest:
-            # Use provided files
-            with tempfile.TemporaryDirectory() as temp_dir:
-                temp_path = Path(temp_dir)
-                nef_file = temp_path / "contract.nef"
-                manifest_file = temp_path / "contract.manifest.json"
-                
-                # Decode NEF from base64
-                import base64
-                nef_bytes = base64.b64decode(request.nef)
-                nef_file.write_bytes(nef_bytes)
-                
-                # Write manifest
-                manifest_file.write_text(json.dumps(request.manifest, indent=2), encoding='utf-8')
-        elif default_nef.exists() and default_manifest.exists():
-            # Use files from generated_contracts directory
-            nef_file = default_nef
-            manifest_file = default_manifest
+        # TEMPORARY TEST MODE: Use FinalTest contract from bin/sc/ for testing button functionality
+        if request and hasattr(request, 'test_mode') and request.test_mode:
+            logger.info("🧪 TEST MODE: Using FinalTest contract from bin/sc/ for testing")
+            test_nef = Path("bin/sc/FinalTest.nef")
+            test_manifest = Path("bin/sc/FinalTest.manifest.json")
+            
+            if not test_nef.exists() or not test_manifest.exists():
+                raise HTTPException(
+                    status_code=400,
+                    detail="Test contract files not found. Expected: bin/sc/FinalTest.nef and bin/sc/FinalTest.manifest.json"
+                )
+            
+            nef_file = test_nef
+            manifest_file = test_manifest
+            logger.info(f"   Using test NEF: {nef_file}")
+            logger.info(f"   Using test manifest: {manifest_file}")
         else:
-            raise HTTPException(
-                status_code=400, 
-                detail="No contract files found. Please export the contract first, or provide nef and manifest in the request."
-            )
+            # Normal mode: use generated contracts or provided files
+            default_nef = generated_contracts_dir / "contract.nef"
+            default_manifest = generated_contracts_dir / "contract.manifest.json"
+            
+            # Determine source of NEF and manifest
+            if request and request.nef and request.manifest:
+                # Use provided files
+                with tempfile.TemporaryDirectory() as temp_dir:
+                    temp_path = Path(temp_dir)
+                    nef_file = temp_path / "contract.nef"
+                    manifest_file = temp_path / "contract.manifest.json"
+                    
+                    # Decode NEF from base64
+                    import base64
+                    nef_bytes = base64.b64decode(request.nef)
+                    nef_file.write_bytes(nef_bytes)
+                    
+                    # Write manifest
+                    manifest_file.write_text(json.dumps(request.manifest, indent=2), encoding='utf-8')
+            elif default_nef.exists() and default_manifest.exists():
+                # Use files from generated_contracts directory
+                nef_file = default_nef
+                manifest_file = default_manifest
+            else:
+                raise HTTPException(
+                    status_code=400, 
+                    detail="No contract files found. Please export the contract first, or provide nef and manifest in the request."
+                )
         
         # Step 2: Ensure files are in generated_contracts/ for RPC deployment
         generated_contracts_dir.mkdir(exist_ok=True)
@@ -610,25 +704,68 @@ async def deploy_contract_endpoint(request: ContractDeployRequest = ContractDepl
             shutil.copy2(manifest_file, target_manifest)
         
         # Get private key from request or environment (needed for both deployment methods)
+        # 1. Get private key from multiple sources
         private_key = None
+        
+        # Try from request body first
         if request and hasattr(request, 'private_key') and request.private_key:
             private_key = request.private_key
-        else:
-            # Try to load from environment/config
+        
+        # Fallback to environment variables
+        if not private_key:
             try:
                 from deployment.config import NEO_PRIVATE_KEY
                 private_key = NEO_PRIVATE_KEY
             except ImportError:
-                import os
-                from dotenv import load_dotenv
-                load_dotenv()
-                private_key = os.getenv("NEO_PRIVATE_KEY")
+                # Try multiple environment variable names
+                private_key = (
+                    os.getenv('NEO_PRIVATE_KEY') or 
+                    os.getenv('PRIVATE_KEY') or 
+                    os.getenv('NEOFS_PRIVATE_KEY_WIF')
+                )
+        
+        # Validate private key exists
+        if not private_key:
+            raise HTTPException(
+                status_code=400,
+                detail="NEO_PRIVATE_KEY not provided. Set it in .env file or pass in request."
+            )
+        
+        # Safe strip (only if not None)
+        private_key = private_key.strip() if private_key else None
         
         if not private_key:
             raise HTTPException(
                 status_code=400,
-                detail="NEO_PRIVATE_KEY required for deployment. Set it in .env file or provide in request."
+                detail="NEO_PRIVATE_KEY is empty after stripping whitespace"
             )
+        
+        logger.info(f"[DEBUG] Private key loaded: {private_key[:10]}...")
+        
+        # 2. Get RPC URL
+        rpc_url = None
+        if request and hasattr(request, 'rpc_url') and request.rpc_url:
+            rpc_url = request.rpc_url
+        
+        if not rpc_url:
+            rpc_url = os.getenv('NEO_RPC_URL')
+        
+        if not rpc_url:
+            # Default to testnet
+            rpc_url = 'http://seed3t5.neo.org:20332'
+            logger.info(f"[DEBUG] Using default RPC: {rpc_url}")
+        
+        logger.info(f"[DEBUG] RPC URL: {rpc_url}")
+        
+        # 3. Get network
+        network = None
+        if request and hasattr(request, 'network') and request.network:
+            network = request.network
+        
+        if not network:
+            network = os.getenv('NEO_NETWORK') or 'testnet'
+        
+        logger.info(f"[DEBUG] Network: {network}")
         
         # Step 3: Deploy to testnet using neon-js (EXACTLY like NeoNova)
         # NeoNova uses neon-js's experimental.deployContract - we use the same library!
@@ -641,63 +778,152 @@ async def deploy_contract_endpoint(request: ContractDeployRequest = ContractDepl
                     str(target_nef),
                     str(target_manifest),
                     private_key,
+                    rpc_url  # Use the rpc_url we validated above
+                )
+                if deploy_result.get("success"):
+                    # Deployment succeeded - check for tx_hash or contract_hash
+                    tx_hash = deploy_result.get("tx_hash")
+                    contract_hash = deploy_result.get("contract_hash")
+                    
+                    if tx_hash:
+                        logger.info(f"✅ neon-js deployment successful! TX: {tx_hash}")
+                        return ContractDeployResponse(
+                            tx_hash=str(tx_hash),
+                            success=True,
+                            error=None,
+                            mock=False
+                        )
+                    elif contract_hash:
+                        # Deployment succeeded but no tx_hash - use contract_hash
+                        logger.info(f"✅ neon-js deployment successful! Contract: {contract_hash}")
+                        logger.info(f"   Note: Transaction hash not available, but contract is deployed")
+                        return ContractDeployResponse(
+                            tx_hash=None,
+                            success=True,
+                            error=None,
+                            mock=False
+                        )
+                    else:
+                        # Success but no hash info - still return success
+                        logger.info(f"✅ neon-js deployment successful! (no hash info)")
+                        return ContractDeployResponse(
+                            tx_hash=None,
+                            success=True,
+                            error=None,
+                            mock=False
+                        )
+                elif deploy_result.get("error"):
+                    error_msg = deploy_result.get("error", "Unknown error")
+                    logger.error(f"❌ neon-js deployment failed: {error_msg}")
+                    
+                    # If neon-js is available, don't fall back to neo-mamba (which has signing issues)
+                    # Return the neon-js error with helpful guidance
+                    if "Insufficient GAS" in error_msg or "GAS" in error_msg:
+                        # Extract account address from the error or use the account
+                        account_address = "your wallet address"
+                        try:
+                            from neo3.wallet import Wallet
+                            temp_wallet = Wallet.from_wif(private_key)
+                            account_address = temp_wallet.default_account.address
+                        except Exception:
+                            pass
+                        
+                        raise HTTPException(
+                            status_code=400,
+                            detail=f"Deployment failed: {error_msg}\n\nYour account address: {account_address}\n\nTo get testnet GAS:\n1. Visit https://neotube.org/faucet\n2. Enter your address: {account_address}\n3. Request testnet GAS\n4. Try deploying again"
+                        )
+                    else:
+                        # neon-js failed - don't fall back, return the error directly
+                        raise HTTPException(
+                            status_code=500,
+                            detail=f"neon-js deployment failed: {error_msg}. neon-js is installed, so this is likely a configuration issue (check NEO_PRIVATE_KEY format, RPC URL, or contract files)."
+                        )
+                else:
+                    # deploy_result exists but has no success or error - this shouldn't happen
+                    logger.error(f"❌ neon-js deployment returned unexpected result: {deploy_result}")
+                    raise HTTPException(
+                        status_code=500,
+                        detail=f"neon-js deployment returned unexpected result. Check backend logs for details."
+                    )
+            except ImportError:
+                logger.warning("⚠️  neon-js deployment not available (Node.js/neon-js not installed)")
+                logger.warning("⚠️  Install Node.js and run: npm install @cityofzion/neon-js")
+                logger.warning("⚠️  Falling back to neo-mamba approach...")
+                # Only fall back if neon-js is not installed
+                fallback_needed = True
+            except Exception as neonjs_error:
+                error_msg = str(neonjs_error)
+                logger.error(f"❌ neon-js deployment exception: {error_msg}")
+                # If neon-js is installed but failed, don't fall back to neo-mamba
+                # Only fall back if it's a true ImportError (neon-js not available)
+                if "ImportError" in error_msg or "not found" in error_msg.lower() or "cannot find module" in error_msg.lower():
+                    logger.warning("⚠️  neon-js not available, falling back to neo-mamba...")
+                    fallback_needed = True
+                else:
+                    # neon-js is available but failed - don't fall back, raise the error
+                    raise HTTPException(
+                        status_code=500,
+                        detail=f"neon-js deployment failed: {error_msg}. Check NEO_PRIVATE_KEY format, RPC URL, or contract files."
+                    )
+            
+            # Only fall back to neo-mamba if neon-js is truly not available
+            # If we get here without raising an exception, neon-js should have succeeded
+            # If it didn't, we should have already raised an HTTPException above
+            if 'fallback_needed' in locals() and fallback_needed:
+                # Fallback to neo-mamba approach
+                from generator.neonova_deploy import deploy_contract_neonova_style
+                import logging
+                logger = logging.getLogger(__name__)
+                
+                logger.info("🚀 Attempting NeoNova-style deployment (using neo-mamba, matches neon-js format)...")
+                
+                # Deploy using neo-mamba (same approach as NeoNova)
+                deploy_result = deploy_contract_neonova_style(
+                    str(target_nef),
+                    str(target_manifest),
+                    private_key,
                     os.getenv("NEO_RPC_URL", "http://seed3t5.neo.org:20332")
                 )
+                
                 if deploy_result.get("success") and deploy_result.get("tx_hash"):
                     tx_hash = deploy_result.get("tx_hash")
-                    logger.info(f"✅ neon-js deployment successful! TX: {tx_hash}")
+                    logger.info(f"✅ NeoNova-style deployment successful! TX: {tx_hash}")
                     return ContractDeployResponse(
                         tx_hash=str(tx_hash),
                         success=True,
                         error=None,
                         mock=False
                     )
-                elif deploy_result.get("error"):
-                    logger.warning(f"⚠️  neon-js deployment failed: {deploy_result.get('error')}")
-                    logger.warning("⚠️  Falling back to neo-mamba approach...")
-            except ImportError:
-                logger.warning("⚠️  neon-js deployment not available (Node.js/neon-js not installed)")
-                logger.warning("⚠️  Install Node.js and run: npm install @cityofzion/neon-js")
-                logger.warning("⚠️  Falling back to neo-mamba approach...")
-            except Exception as neonjs_error:
-                logger.warning(f"⚠️  neon-js deployment error: {neonjs_error}")
-                logger.warning("⚠️  Falling back to neo-mamba approach...")
-            
-            # Fallback to neo-mamba approach
-            from generator.neonova_deploy import deploy_contract_neonova_style
+                else:
+                    error_msg = deploy_result.get("error", "Unknown deployment error")
+                    logger.error(f"NeoNova-style deployment failed: {error_msg}")
+                    raise Exception(f"Deployment failed: {error_msg}")
+                
+        except HTTPException:
+            # Re-raise HTTPException - don't catch it, let it propagate to FastAPI
+            raise
+        except AttributeError as attr_error:
+            # This catches the 'NoneType' has no attribute 'strip' error
+            import traceback
             import logging
             logger = logging.getLogger(__name__)
+            error_trace = traceback.format_exc()
+            logger.error(f"[ERROR] AttributeError: {error_trace}")
             
-            logger.info("🚀 Attempting NeoNova-style deployment (using neo-mamba, matches neon-js format)...")
-            
-            # Deploy using neo-mamba (same approach as NeoNova)
-            deploy_result = deploy_contract_neonova_style(
-                str(target_nef),
-                str(target_manifest),
-                private_key,
-                os.getenv("NEO_RPC_URL", "http://seed3t5.neo.org:20332")
+            return ContractDeployResponse(
+                tx_hash=None,
+                success=False,
+                error=f'Configuration error: A required value is None. Check NEO_PRIVATE_KEY, RPC_URL, and contract files. Details: {str(attr_error)}',
+                mock=False
             )
-            
-            if deploy_result.get("success") and deploy_result.get("tx_hash"):
-                tx_hash = deploy_result.get("tx_hash")
-                logger.info(f"✅ NeoNova-style deployment successful! TX: {tx_hash}")
-                return ContractDeployResponse(
-                    tx_hash=str(tx_hash),
-                    success=True,
-                    error=None,
-                    mock=False
-                )
-            else:
-                error_msg = deploy_result.get("error", "Unknown deployment error")
-                logger.error(f"NeoNova-style deployment failed: {error_msg}")
-                raise Exception(f"Deployment failed: {error_msg}")
-                
         except Exception as rpc_error:
             # Log the error before falling back
             import logging
+            import traceback
             logger = logging.getLogger(__name__)
             error_msg = str(rpc_error)
-            logger.warning(f"⚠️  Pure RPC deployment failed: {error_msg}")
+            error_trace = traceback.format_exc()
+            logger.error(f"[ERROR] Deployment failed: {error_trace}")
             
             # Check if it's the NEF size issue
             if "too small" in error_msg.lower() or "24 bytes" in error_msg:
@@ -814,7 +1040,6 @@ async def deploy_contract_endpoint(request: ContractDeployRequest = ContractDepl
                     from deployment.config import NEO_PRIVATE_KEY
                     private_key = NEO_PRIVATE_KEY
                 except ImportError:
-                    import os
                     private_key = os.getenv("NEO_PRIVATE_KEY")
             
             if not private_key or private_key == "":

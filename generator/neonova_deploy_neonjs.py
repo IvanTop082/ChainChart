@@ -12,6 +12,13 @@ import sys
 from pathlib import Path
 from typing import Dict, Any, Optional
 
+# Load .env file at module level
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except ImportError:
+    pass  # dotenv not installed, will use environment variables only
+
 
 def deploy_contract_with_neonjs(
     nef_path: str,
@@ -57,27 +64,24 @@ def deploy_contract_with_neonjs(
         rpc_url = os.getenv("NEO_RPC_URL", "http://seed3t5.neo.org:20332")
     
     if not private_key:
-        # Try multiple ways to get private key
+        # Try multiple ways to get private key with fallbacks
         try:
             from deployment.config import NEO_PRIVATE_KEY
             private_key = NEO_PRIVATE_KEY
         except ImportError:
-            private_key = os.getenv("NEO_PRIVATE_KEY")
-        
-        if not private_key:
-            try:
-                from dotenv import load_dotenv
-                load_dotenv()
-                private_key = os.getenv("NEO_PRIVATE_KEY")
-            except ImportError:
-                pass
+            # Try multiple environment variable names
+            private_key = os.getenv('NEO_PRIVATE_KEY') or os.getenv('PRIVATE_KEY') or os.getenv('NEOFS_PRIVATE_KEY_WIF')
     
+    # Validate before using
     if not private_key:
         return {
             "success": False,
             "tx_hash": None,
             "error": "NEO_PRIVATE_KEY required. Set it in .env file or environment variable."
         }
+    
+    # Now safe to strip
+    private_key = private_key.strip()
     
     # Check if Node.js is available
     try:
@@ -138,13 +142,38 @@ def deploy_contract_with_neonjs(
             ],
             capture_output=True,
             text=True,
+            encoding='utf-8',
+            errors='replace',  # Replace invalid characters instead of failing
             timeout=120,  # 2 minute timeout
             cwd=str(Path(__file__).parent.parent)
         )
         
         # Parse JSON output
+        # JSON should be in stdout, debug messages go to stderr
         try:
-            output = result.stdout.strip()
+            # Use stdout for JSON (stderr has debug messages)
+            output = None
+            if result.stdout:
+                output = result.stdout.strip()
+            
+            # Log stderr for debugging but don't use it for JSON parsing
+            if result.stderr:
+                logger.debug(f"stderr output: {result.stderr[:200]}")  # Log first 200 chars for debugging
+            
+            # If no output at all, return error
+            if not output or output == '':
+                error_msg = "No output from neon-js deployment script"
+                if result.returncode != 0:
+                    error_msg += f" (exit code: {result.returncode})"
+                logger.error(f"❌ {error_msg}")
+                logger.error(f"   stdout: {result.stdout}")
+                logger.error(f"   stderr: {result.stderr}")
+                return {
+                    "success": False,
+                    "tx_hash": None,
+                    "error": f"{error_msg}. Check Node.js and neon-js installation."
+                }
+            
             # Extract JSON from output (handle any extra logging)
             json_start = output.find('{')
             json_end = output.rfind('}') + 1
@@ -178,13 +207,13 @@ def deploy_contract_with_neonjs(
                 
         except json.JSONDecodeError as json_err:
             # If JSON parsing fails, return error with full output
-            error_output = result.stderr or result.stdout
+            error_output = (result.stderr or result.stdout) or "No output"
             logger.error(f"❌ Failed to parse deployment result: {json_err}")
             logger.error(f"   Output: {error_output}")
             return {
                 "success": False,
                 "tx_hash": None,
-                "error": f"Failed to parse deployment result. Output: {error_output[:500]}"
+                "error": f"Failed to parse deployment result. Output: {str(error_output)[:500]}"
             }
             
     except subprocess.TimeoutExpired:

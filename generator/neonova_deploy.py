@@ -81,13 +81,15 @@ def deploy_contract_neonova_style(
             "error": "NEF or manifest file not found"
         }
     
+    # Initialize logger early (before any logging calls)
+    import logging
+    logger = logging.getLogger(__name__)
+    
     # Read NEF and manifest
     nef_bytes = nef_file.read_bytes()
     manifest_json = json.loads(manifest_file.read_text(encoding='utf-8'))
     
     # DEBUG: Log file sizes and basic info
-    import logging
-    logger = logging.getLogger(__name__)
     logger.info(f"📦 NEF file size: {len(nef_bytes)} bytes")
     logger.info(f"📄 Manifest keys: {list(manifest_json.keys())}")
     logger.info(f"📄 Manifest name: {manifest_json.get('name', 'N/A')}")

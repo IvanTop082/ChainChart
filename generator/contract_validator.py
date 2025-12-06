@@ -261,6 +261,101 @@ def validate_contract(contract_code: str) -> Tuple[bool, List[str], str]:
     fixed_code = re.sub(r'\s*\[InitialValue\("0x00",\s*ContractParameterType\.Hash160\)\]\s*\n', '', fixed_code)
     fixed_code = re.sub(r'\s*\[InitialValue\("0x00",\s*ContractParameterType\.Hash160\)\]\s*', '', fixed_code)
     
+    # Check 8.5: Fix variable names with spaces (invalid C# syntax)
+    # Pattern: "private static StorageMap Variable Name =>" -> "private static StorageMap VariableName =>"
+    # This fixes cases like "New stateMap" -> "NewstateMap"
+    # Also handles cases where multiple statements are on one line
+    lines = fixed_code.split('\n')
+    for i, line in enumerate(lines):
+        # Fix StorageMap declarations: "StorageMap Word1 Word2 =>" -> "StorageMap Word1Word2 =>"
+        # Handle cases where multiple statements are on one line by fixing each occurrence
+        original_line = line
+        while 'StorageMap' in line and '=>' in line:
+            # Match: "StorageMap [identifier with possible spaces] =>"
+            # More flexible pattern that handles any whitespace
+            match = re.search(r'(private\s+static\s+StorageMap\s+)([a-zA-Z_][a-zA-Z0-9_\s]*?)(\s*=>)', line)
+            if match:
+                prefix = match.group(1)
+                var_name_with_spaces = match.group(2).strip()
+                suffix = match.group(3)
+                # Remove all spaces from variable name
+                var_name = var_name_with_spaces.replace(' ', '').replace('\t', '').replace('\n', '')
+                if var_name != var_name_with_spaces:
+                    # Replace the variable name part
+                    old_pattern = prefix + var_name_with_spaces + suffix
+                    new_pattern = prefix + var_name + suffix
+                    line = line.replace(old_pattern, new_pattern, 1)  # Replace only first occurrence
+                    lines[i] = line
+                else:
+                    break  # No more spaces to fix
+            else:
+                break  # No match found
+        # Update line if changed
+        if line != original_line:
+            lines[i] = line
+        
+        # Fix event declarations with spaces: "event Action<> New event;" -> "event Action<> Newevent;"
+        # Handle multiple events on same line - use findall to fix ALL occurrences
+        original_line = line
+        # Find all event declarations with spaces in their names
+        # Pattern: "public static event Action<> Variable Name;" or "event Action<> Variable Name;"
+        event_pattern = r'(public\s+static\s+event\s+Action[^;]*?\s+)([a-zA-Z_][a-zA-Z0-9_\s]+?)(\s*[;=])'
+        matches = list(re.finditer(event_pattern, line))
+        if not matches:
+            # Try without "public static"
+            event_pattern = r'(event\s+Action[^;]*?\s+)([a-zA-Z_][a-zA-Z0-9_\s]+?)(\s*[;=])'
+            matches = list(re.finditer(event_pattern, line))
+        
+        # Fix all matches that have spaces in the variable name
+        for match in reversed(matches):  # Process in reverse to maintain positions
+            var_name_with_spaces = match.group(2).strip()
+            if ' ' in var_name_with_spaces:
+                prefix = match.group(1)
+                suffix = match.group(3)
+                var_name = var_name_with_spaces.replace(' ', '').replace('\t', '').replace('\n', '')
+                old_pattern = prefix + var_name_with_spaces + suffix
+                new_pattern = prefix + var_name + suffix
+                line = line.replace(old_pattern, new_pattern, 1)
+        
+        if line != original_line:
+            lines[i] = line
+        
+        # Fix other variable declarations with spaces
+        # Pattern: "BigInteger Variable Name" or "void Variable Name("
+        while re.search(r'(private\s+static\s+(?:BigInteger|void|string|ByteString|bool)\s+)([a-zA-Z_][a-zA-Z0-9_\s]+?)(\s*[={\(;])', line):
+            match = re.search(r'(private\s+static\s+(?:BigInteger|void|string|ByteString|bool)\s+)([a-zA-Z_][a-zA-Z0-9_\s]+?)(\s*[={\(;])', line)
+            if match:
+                prefix = match.group(1)
+                var_name_with_spaces = match.group(2).strip()
+                suffix = match.group(3)
+                # Remove all spaces from variable name
+                var_name = var_name_with_spaces.replace(' ', '').replace('\t', '').replace('\n', '')
+                if var_name != var_name_with_spaces:
+                    old_pattern = prefix + var_name_with_spaces + suffix
+                    new_pattern = prefix + var_name + suffix
+                    line = line.replace(old_pattern, new_pattern, 1)
+                    lines[i] = line
+                else:
+                    break
+            else:
+                break
+    
+    # Also fix function names with spaces: "void New function(" -> "void Newfunction("
+    for i, line in enumerate(lines):
+        if 'public static void' in line or 'private static void' in line:
+            match = re.search(r'(public\s+static\s+void\s+)([a-zA-Z_][a-zA-Z0-9_\s]+?)(\s*\()', line)
+            if match:
+                prefix = match.group(1)
+                func_name_with_spaces = match.group(2).strip()
+                suffix = match.group(3)
+                func_name = func_name_with_spaces.replace(' ', '').replace('\t', '').replace('\n', '')
+                if func_name != func_name_with_spaces:
+                    old_pattern = prefix + func_name_with_spaces + suffix
+                    new_pattern = prefix + func_name + suffix
+                    lines[i] = line.replace(old_pattern, new_pattern, 1)
+    
+    fixed_code = '\n'.join(lines)
+    
     # Check 9: Functions are public static
     function_lines = [line for line in fixed_code.split('\n') if 'static void' in line or 'static' in line]
     for line in function_lines:

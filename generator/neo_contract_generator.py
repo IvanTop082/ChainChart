@@ -32,8 +32,10 @@ def generate_storage_variables(nodes: List[Dict[str, Any]]) -> str:
         label = node_data.get("label", f"state_{node.get('id', '')}")
         node_id = node.get("id", "")
         
-        # Sanitize label for C# identifier
+        # Sanitize label for C# identifier - remove ALL spaces and special chars
         var_name = sanitize_identifier(label)
+        # Double-check: ensure no spaces remain (defensive)
+        var_name = ''.join(var_name.split())  # Remove all whitespace
         
         # If duplicate name, append node ID to make it unique
         if var_name in seen_names:
@@ -42,6 +44,7 @@ def generate_storage_variables(nodes: List[Dict[str, Any]]) -> str:
         
         storage_key = label
         
+        # Use property syntax (expression-bodied property is valid C#)
         code += f'        private static StorageMap {var_name}Map => new StorageMap(Storage.CurrentContext, "{storage_key}");\n'
         code += f"        private static BigInteger {var_name}\n"
         code += f"        {{\n"
@@ -323,15 +326,19 @@ def write_contract_to_file(contract_code: str, output_path: str) -> None:
 
 def sanitize_identifier(name: str) -> str:
     """Sanitize a name to be a valid C# identifier."""
-    # Remove spaces and special characters, keep alphanumeric and underscore
     import re
+    # First, remove all spaces and special characters, keep alphanumeric and underscore
     sanitized = re.sub(r'[^a-zA-Z0-9_]', '', name)
+    # Remove any remaining whitespace (just in case)
+    sanitized = sanitized.replace(' ', '').replace('\t', '').replace('\n', '')
     # Ensure it starts with a letter or underscore
     if sanitized and not sanitized[0].isalpha() and sanitized[0] != '_':
         sanitized = '_' + sanitized
     # If empty, use default
     if not sanitized:
         sanitized = 'Item'
+    # Ensure no spaces remain
+    assert ' ' not in sanitized, f"Sanitized identifier still contains space: '{sanitized}' from '{name}'"
     return sanitized
 
 

@@ -23,11 +23,23 @@ def validate_contract(contract_code: str) -> Tuple[bool, List[str], str]:
     fixed_code = contract_code
     
     # Check 1: Contract extends SmartContract
-    if "class Contract" not in fixed_code or ": SmartContract" not in fixed_code:
+    # Check if any class extends SmartContract (more flexible than just "Contract")
+    has_smartcontract = ": SmartContract" in fixed_code
+    has_class = "class " in fixed_code
+    
+    if not has_class:
+        errors.append("Contract must have a class declaration")
+    elif not has_smartcontract:
         errors.append("Contract must extend SmartContract")
-        # Try to fix
-        if "class Contract" in fixed_code and ": SmartContract" not in fixed_code:
-            fixed_code = fixed_code.replace("class Contract", "class Contract : SmartContract")
+        # Try to fix - find the first class declaration and add : SmartContract
+        import re
+        class_match = re.search(r'(public\s+)?class\s+(\w+)(\s*\{|\s*:)', fixed_code)
+        if class_match:
+            class_decl = class_match.group(0)
+            if ": SmartContract" not in class_decl:
+                # Replace class declaration to add : SmartContract
+                new_decl = class_decl.replace(" {", " : SmartContract {").replace(":", " : SmartContract")
+                fixed_code = fixed_code.replace(class_decl, new_decl, 1)
     
     # Check 2: Required namespaces
     required_namespaces = [
@@ -247,14 +259,20 @@ def validate_contract(contract_code: str) -> Tuple[bool, List[str], str]:
         if "namespace" not in fixed_code:
             # Wrap in namespace
             fixed_code = f"namespace ChainChartGenerated\n{{\n{fixed_code}\n}}"
+        else:
+            # Replace existing namespace with ChainChartGenerated
+            import re
+            fixed_code = re.sub(r'namespace\s+\w+\s*\{', 'namespace ChainChartGenerated\n{', fixed_code, count=1)
     
     # Check 7: Contract has ManifestExtra attributes (DisplayName removed - not in Neo N3)
     if "[ManifestExtra" not in fixed_code:
-        if "public class Contract" in fixed_code:
-            fixed_code = fixed_code.replace(
-                "public class Contract",
-                '    [ManifestExtra("Author", "ChainChart")]\n    [ManifestExtra("Description", "Generated from ChainChart diagram")]\n    public class Contract'
-            )
+        # Find any public class declaration and add ManifestExtra before it
+        import re
+        class_match = re.search(r'(public\s+class\s+\w+)', fixed_code)
+        if class_match:
+            class_decl = class_match.group(1)
+            manifest_extra = '    [ManifestExtra("Author", "ChainChart")]\n    [ManifestExtra("Description", "Generated from ChainChart diagram")]\n    '
+            fixed_code = fixed_code.replace(class_decl, manifest_extra + class_decl, 1)
     
     # Check 8: Remove invalid InitialValue for Owner (0x00 is invalid for Hash160)
     # Remove [InitialValue("0x00", ContractParameterType.Hash160)] lines

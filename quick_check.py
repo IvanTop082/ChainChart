@@ -15,3 +15,4 @@ for var in vars_to_check:
         print(f'❌ {var}: NOT SET')
 print("=" * 60)
 
+

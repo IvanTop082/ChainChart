@@ -342,3 +342,4 @@ def deploy_contract_neonova_rpc_style(
             "error": f"Deployment failed: {str(e)}\n{traceback.format_exc()}"
         }
 
+

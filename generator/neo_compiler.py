@@ -36,6 +36,11 @@ def compile_contract(cs_path: str) -> Tuple[Optional[str], Optional[str], bool, 
     output_dir = cs_file.parent / "compiled"
     output_dir.mkdir(exist_ok=True)
     
+    # nccs compiler creates files in bin/sc/ directory relative to the project
+    # Check both the compiled directory and bin/sc/
+    bin_sc_dir = cs_file.parent / "bin" / "sc"
+    bin_sc_dir.mkdir(parents=True, exist_ok=True)
+    
     errors = []
     
     # Create a .csproj file if it doesn't exist (needed for framework references)
@@ -105,6 +110,9 @@ def compile_contract(cs_path: str) -> Tuple[Optional[str], Optional[str], bool, 
         
         # Try to compile
         try:
+            import logging
+            logger = logging.getLogger(__name__)
+            logger.info(f"🔨 Attempting compilation with {compiler_name}: {' '.join(cmd)}")
             result = subprocess.run(
                 cmd,
                 capture_output=True,
@@ -113,6 +121,12 @@ def compile_contract(cs_path: str) -> Tuple[Optional[str], Optional[str], bool, 
                 cwd=str(cs_file.parent)
             )
             
+            logger.info(f"🔨 Compiler return code: {result.returncode}")
+            if result.stdout:
+                logger.debug(f"🔨 Compiler stdout: {result.stdout[:500]}")
+            if result.stderr:
+                logger.debug(f"🔨 Compiler stderr: {result.stderr[:500]}")
+            
             # Parse output for errors/warnings
             if result.stderr:
                 errors.extend(result.stderr.split('\n'))
@@ -120,14 +134,41 @@ def compile_contract(cs_path: str) -> Tuple[Optional[str], Optional[str], bool, 
                 errors.extend(result.stdout.split('\n'))
             
             # Check if output files were created (even if compiler reported errors)
+            # nccs compiler creates files in bin/sc/ directory
             contract_name = cs_file.stem
+            bin_sc_dir = cs_file.parent / "bin" / "sc"
+            
+            # Wait a moment for compiler to finish writing files (especially on Windows)
+            import time
+            time.sleep(0.5)
+            
+            # Always check bin/sc/ - compiler creates it if needed
             nef_files = list(cs_file.parent.glob("*.nef")) + list(output_dir.glob("*.nef"))
             manifest_files = list(cs_file.parent.glob("*.manifest.json")) + list(output_dir.glob("*.manifest.json"))
+            
+            # Check bin/sc/ directory (nccs puts files here) - try even if it doesn't exist yet
+            # The compiler might have just created it
+            if bin_sc_dir.exists():
+                nef_files.extend(bin_sc_dir.glob("*.nef"))
+                manifest_files.extend(bin_sc_dir.glob("*.manifest.json"))
+            else:
+                # Try to find bin/sc/ in parent directories (compiler might create it relative to project root)
+                potential_bin_sc = cs_file.parent.parent / "bin" / "sc"
+                if potential_bin_sc.exists():
+                    nef_files.extend(potential_bin_sc.glob("*.nef"))
+                    manifest_files.extend(potential_bin_sc.glob("*.manifest.json"))
+            
+            logger.info(f"🔨 Found {len(nef_files)} NEF files, {len(manifest_files)} manifest files")
+            if nef_files:
+                logger.info(f"🔨 NEF files: {[str(f) for f in nef_files]}")
+            if manifest_files:
+                logger.info(f"🔨 Manifest files: {[str(f) for f in manifest_files]}")
             
             # If files exist, compilation succeeded (FormatException is non-critical)
             if nef_files and manifest_files:
                 nef_file = nef_files[0]
                 manifest_file = manifest_files[0]
+                logger.info(f"✅ Compilation succeeded! NEF: {nef_file}, Manifest: {manifest_file}")
                 # Filter out FormatException errors (they're non-critical if files exist)
                 critical_errors = [e for e in errors if "FormatException" not in e and "error CS" not in e]
                 return str(nef_file), str(manifest_file), True, critical_errors
@@ -135,23 +176,31 @@ def compile_contract(cs_path: str) -> Tuple[Optional[str], Optional[str], bool, 
             if result.returncode == 0:
                 # Look for generated files
                 contract_name = cs_file.stem
+                bin_sc_dir = cs_file.parent / "bin" / "sc"  # nccs compiler creates files here
                 
-                # Try different naming patterns
+                # Try different naming patterns (nccs puts files in bin/sc/)
                 possible_nef = [
+                    bin_sc_dir / f"{contract_name}.nef",  # nccs puts files here
                     output_dir / f"{contract_name}.nef",
-                    cs_file.parent / f"{contract_name}.nef",
                     cs_file.parent / f"{contract_name}.nef"
                 ]
                 
                 possible_manifest = [
+                    bin_sc_dir / f"{contract_name}.manifest.json",  # nccs puts files here
                     output_dir / f"{contract_name}.manifest.json",
                     cs_file.parent / f"{contract_name}.manifest.json",
                     cs_file.parent / f"{contract_name}.abi.json"
                 ]
                 
                 # Also search for any .nef and .manifest.json files
+                # nccs compiler creates files in bin/sc/ directory
                 nef_files = list(cs_file.parent.glob("*.nef")) + list(output_dir.glob("*.nef"))
                 manifest_files = list(cs_file.parent.glob("*.manifest.json")) + list(output_dir.glob("*.manifest.json"))
+                
+                # Check bin/sc/ directory (nccs puts files here)
+                if bin_sc_dir.exists():
+                    nef_files.extend(bin_sc_dir.glob("*.nef"))
+                    manifest_files.extend(bin_sc_dir.glob("*.manifest.json"))
                 
                 nef_file = None
                 manifest_file = None

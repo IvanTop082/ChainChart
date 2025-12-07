@@ -149,16 +149,22 @@ def deploy_contract_with_neonjs(
         )
         
         # Parse JSON output
-        # JSON should be in stdout, debug messages go to stderr
+        # JSON can be in stdout OR stderr (errors go to stderr via console.error)
         try:
-            # Use stdout for JSON (stderr has debug messages)
-            output = None
-            if result.stdout:
-                output = result.stdout.strip()
+            # Check both stdout and stderr for JSON
+            stdout_text = result.stdout.strip() if result.stdout else ""
+            stderr_text = result.stderr.strip() if result.stderr else ""
             
-            # Log stderr for debugging but don't use it for JSON parsing
-            if result.stderr:
-                logger.debug(f"stderr output: {result.stderr[:200]}")  # Log first 200 chars for debugging
+            # Determine which stream has the JSON (or combine if needed)
+            output = None
+            if stdout_text and '{' in stdout_text:
+                output = stdout_text
+            elif stderr_text and '{' in stderr_text:
+                output = stderr_text
+            elif stdout_text:
+                output = stdout_text
+            elif stderr_text:
+                output = stderr_text
             
             # If no output at all, return error
             if not output or output == '':
@@ -166,8 +172,8 @@ def deploy_contract_with_neonjs(
                 if result.returncode != 0:
                     error_msg += f" (exit code: {result.returncode})"
                 logger.error(f"❌ {error_msg}")
-                logger.error(f"   stdout: {result.stdout}")
-                logger.error(f"   stderr: {result.stderr}")
+                logger.error(f"   stdout: {stdout_text[:500]}")
+                logger.error(f"   stderr: {stderr_text[:500]}")
                 return {
                     "success": False,
                     "tx_hash": None,
@@ -175,12 +181,52 @@ def deploy_contract_with_neonjs(
                 }
             
             # Extract JSON from output (handle any extra logging)
+            # Try to find JSON object - look for the last complete JSON object
             json_start = output.find('{')
-            json_end = output.rfind('}') + 1
-            if json_start >= 0 and json_end > json_start:
-                output = output[json_start:json_end]
+            if json_start >= 0:
+                # Find the matching closing brace
+                brace_count = 0
+                json_end = json_start
+                for i in range(json_start, len(output)):
+                    if output[i] == '{':
+                        brace_count += 1
+                    elif output[i] == '}':
+                        brace_count -= 1
+                        if brace_count == 0:
+                            json_end = i + 1
+                            break
+                
+                if json_end > json_start:
+                    output = output[json_start:json_end]
+                else:
+                    # Fallback: try to find last }
+                    json_end = output.rfind('}') + 1
+                    if json_end > json_start:
+                        output = output[json_start:json_end]
             
-            deploy_result = json.loads(output)
+            # Try to parse JSON
+            try:
+                deploy_result = json.loads(output)
+            except json.JSONDecodeError:
+                # If parsing fails, try to clean the output
+                # Remove any non-printable characters at the start
+                cleaned = output.strip()
+                # Try parsing again
+                try:
+                    deploy_result = json.loads(cleaned)
+                except json.JSONDecodeError:
+                    # Last resort: try to extract JSON from the error message itself
+                    # Sometimes the error message contains the JSON
+                    if '{"success"' in result.stdout or '{"success"' in result.stderr:
+                        json_str = result.stdout if '{"success"' in result.stdout else result.stderr
+                        json_start = json_str.find('{"success"')
+                        json_end = json_str.find('\n', json_start)
+                        if json_end == -1:
+                            json_end = len(json_str)
+                        cleaned = json_str[json_start:json_end].strip()
+                        deploy_result = json.loads(cleaned)
+                    else:
+                        raise
             
             if deploy_result.get("success"):
                 logger.info(f"✅ Deployment successful! TX: {deploy_result.get('tx_hash')}")

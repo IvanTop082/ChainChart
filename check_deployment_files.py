@@ -23,3 +23,4 @@ if manifest.exists():
 print(f"\n{'✅ Files ready for deployment!' if (nef.exists() and manifest.exists()) else '⚠️  Files missing - need to export contract first'}")
 print("=" * 60)
 
+

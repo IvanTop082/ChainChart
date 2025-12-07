@@ -1,0 +1,16 @@
+{
+  "name": "CounterContract_1765070119026_1295",
+  "groups": [],
+  "features": {},
+  "supportedstandards": [],
+  "abi": {
+    "methods": [],
+    "events": []
+  },
+  "permissions": [],
+  "trusts": [],
+  "extra": {
+    "Author": "ChainChart",
+    "Description": "Generated contract: CounterContract_1765070119026_1295 (not yet compiled)"
+  }
+}

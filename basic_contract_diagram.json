@@ -1,0 +1,63 @@
+{
+  "nodes": [
+    {
+      "id": "state1",
+      "type": "state",
+      "label": "counter",
+      "value": "0",
+      "position": { "x": 100, "y": 100 },
+      "metadata": {}
+    },
+    {
+      "id": "func1",
+      "type": "function",
+      "label": "Increment",
+      "value": "",
+      "position": { "x": 300, "y": 100 },
+      "metadata": {
+        "name": "Increment"
+      }
+    },
+    {
+      "id": "op1",
+      "type": "operation",
+      "label": "Add One",
+      "value": "counter + 1",
+      "position": { "x": 500, "y": 100 },
+      "metadata": {
+        "op": "+",
+        "operand_a": "counter",
+        "operand_b": "1"
+      }
+    },
+    {
+      "id": "func2",
+      "type": "function",
+      "label": "GetCounter",
+      "value": "",
+      "position": { "x": 300, "y": 250 },
+      "metadata": {
+        "name": "GetCounter"
+      }
+    }
+  ],
+  "edges": [
+    {
+      "from": "state1",
+      "to": "func1"
+    },
+    {
+      "from": "func1",
+      "to": "op1"
+    },
+    {
+      "from": "op1",
+      "to": "state1"
+    },
+    {
+      "from": "state1",
+      "to": "func2"
+    }
+  ]
+}
+

@@ -44,3 +44,4 @@ def has_contract_hash() -> bool:
     return len(hash_str) == 40 and all(c in '0123456789abcdefABCDEF' for c in hash_str)
 
 
+

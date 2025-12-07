@@ -33,7 +33,7 @@ async function deployContract() {
 
         // Create account from private key (supports both HEX and WIF format)
         // wallet.Account auto-detects format: WIF (starts with K/L/c) or HEX (with/without 0x prefix)
-        let account;
+        let account; 
         try {
             // Try to create account - neon-js auto-detects WIF vs HEX
             account = new wallet.Account(privateKey);
@@ -179,26 +179,27 @@ async function deployContract() {
                 }
             }
             
+            // Always calculate contract hash (needed for frontend connection)
+            const contractHash = experimental.getContractHash(
+                u.HexString.fromHex(wallet.getScriptHashFromAddress(account.address)),
+                nefFile.checksum,
+                contractManifest.name
+            );
+            
             if (txHash) {
                 // Convert to string if it's an object
                 if (typeof txHash === 'object' && txHash.toString) {
                     txHash = txHash.toString();
                 }
+                // Return both tx_hash and contract_hash
                 console.log(JSON.stringify({
                     success: true,
                     tx_hash: txHash,
+                    contract_hash: `0x${contractHash}`,
                     error: null
                 }));
             } else {
-                // Even if no hash, deployment might have succeeded (no exception was thrown)
-                // Calculate contract hash like NeoNova does - this proves deployment worked
-                const contractHash = experimental.getContractHash(
-                    u.HexString.fromHex(wallet.getScriptHashFromAddress(account.address)),
-                    nefFile.checksum,
-                    contractManifest.name
-                );
-                
-                // Return success - deployment worked even if we couldn't parse txHash
+                // No tx_hash but deployment succeeded - return contract_hash
                 console.log(JSON.stringify({
                     success: true,
                     tx_hash: null,

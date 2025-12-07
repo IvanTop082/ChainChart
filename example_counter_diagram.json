@@ -1,0 +1,93 @@
+{
+  "nodes": [
+    {
+      "id": "state_counter",
+      "type": "state",
+      "label": "Counter",
+      "value": "0",
+      "position": { "x": 100, "y": 100 },
+      "metadata": {
+        "dataType": "Integer",
+        "initialValue": 0
+      }
+    },
+    {
+      "id": "func_increment",
+      "type": "function",
+      "label": "Increment",
+      "position": { "x": 300, "y": 100 },
+      "metadata": {
+        "name": "Increment",
+        "parameters": []
+      }
+    },
+    {
+      "id": "op_add_one",
+      "type": "operation",
+      "label": "Add One",
+      "value": "Counter + 1",
+      "position": { "x": 500, "y": 100 },
+      "metadata": {
+        "op": "+",
+        "operand_a": "Counter",
+        "operand_b": "1"
+      }
+    },
+    {
+      "id": "func_decrement",
+      "type": "function",
+      "label": "Decrement",
+      "position": { "x": 300, "y": 250 },
+      "metadata": {
+        "name": "Decrement",
+        "parameters": []
+      }
+    },
+    {
+      "id": "op_subtract_one",
+      "type": "operation",
+      "label": "Subtract One",
+      "value": "Counter - 1",
+      "position": { "x": 500, "y": 250 },
+      "metadata": {
+        "op": "-",
+        "operand_a": "Counter",
+        "operand_b": "1"
+      }
+    },
+    {
+      "id": "func_get",
+      "type": "function",
+      "label": "GetCounter",
+      "position": { "x": 300, "y": 400 },
+      "metadata": {
+        "name": "GetCounter",
+        "parameters": [],
+        "returnType": "Integer"
+      }
+    }
+  ],
+  "edges": [
+    {
+      "from": "func_increment",
+      "to": "op_add_one"
+    },
+    {
+      "from": "op_add_one",
+      "to": "state_counter"
+    },
+    {
+      "from": "func_decrement",
+      "to": "op_subtract_one"
+    },
+    {
+      "from": "op_subtract_one",
+      "to": "state_counter"
+    },
+    {
+      "from": "state_counter",
+      "to": "func_get"
+    }
+  ]
+}
+

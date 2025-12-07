@@ -1,0 +1,131 @@
+{
+  "nodes": [
+    {
+      "id": "state_balances",
+      "type": "state",
+      "label": "Balances",
+      "value": "Map<Address, Integer>",
+      "position": { "x": 100, "y": 100 },
+      "metadata": {
+        "dataType": "Map",
+        "keyType": "Address",
+        "valueType": "Integer"
+      }
+    },
+    {
+      "id": "state_totalSupply",
+      "type": "state",
+      "label": "Total Supply",
+      "value": "1000000",
+      "position": { "x": 100, "y": 250 },
+      "metadata": {
+        "dataType": "Integer",
+        "initialValue": 1000000
+      }
+    },
+    {
+      "id": "func_transfer",
+      "type": "function",
+      "label": "Transfer",
+      "position": { "x": 400, "y": 100 },
+      "metadata": {
+        "name": "Transfer",
+        "parameters": [
+          { "name": "from", "type": "Address" },
+          { "name": "to", "type": "Address" },
+          { "name": "amount", "type": "Integer" }
+        ]
+      }
+    },
+    {
+      "id": "op_check_balance",
+      "type": "operation",
+      "label": "Check Balance",
+      "value": "Balances[from] >= amount",
+      "position": { "x": 600, "y": 100 },
+      "metadata": {
+        "op": ">=",
+        "operand_a": "Balances[from]",
+        "operand_b": "amount"
+      }
+    },
+    {
+      "id": "op_update_balances",
+      "type": "operation",
+      "label": "Update Balances",
+      "value": "Balances[from] -= amount; Balances[to] += amount",
+      "position": { "x": 800, "y": 100 },
+      "metadata": {
+        "op": "transfer",
+        "from": "from",
+        "to": "to",
+        "amount": "amount"
+      }
+    },
+    {
+      "id": "func_balanceOf",
+      "type": "function",
+      "label": "BalanceOf",
+      "position": { "x": 400, "y": 250 },
+      "metadata": {
+        "name": "BalanceOf",
+        "parameters": [
+          { "name": "address", "type": "Address" }
+        ],
+        "returnType": "Integer"
+      }
+    },
+    {
+      "id": "func_mint",
+      "type": "function",
+      "label": "Mint",
+      "position": { "x": 400, "y": 400 },
+      "metadata": {
+        "name": "Mint",
+        "parameters": [
+          { "name": "to", "type": "Address" },
+          { "name": "amount", "type": "Integer" }
+        ]
+      }
+    },
+    {
+      "id": "op_add_to_supply",
+      "type": "operation",
+      "label": "Add to Supply",
+      "value": "TotalSupply += amount; Balances[to] += amount",
+      "position": { "x": 600, "y": 400 },
+      "metadata": {
+        "op": "mint",
+        "to": "to",
+        "amount": "amount"
+      }
+    }
+  ],
+  "edges": [
+    {
+      "from": "func_transfer",
+      "to": "op_check_balance"
+    },
+    {
+      "from": "op_check_balance",
+      "to": "op_update_balances"
+    },
+    {
+      "from": "state_balances",
+      "to": "func_balanceOf"
+    },
+    {
+      "from": "func_mint",
+      "to": "op_add_to_supply"
+    },
+    {
+      "from": "op_add_to_supply",
+      "to": "state_balances"
+    },
+    {
+      "from": "op_add_to_supply",
+      "to": "state_totalSupply"
+    }
+  ]
+}
+

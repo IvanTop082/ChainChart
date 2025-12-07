@@ -1,0 +1,192 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ChainChart Contract Test</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 800px;
+            margin: 50px auto;
+            padding: 20px;
+            background: #1a1a1a;
+            color: #fff;
+        }
+        .container {
+            background: #2a2a2a;
+            padding: 30px;
+            border-radius: 10px;
+        }
+        input, button {
+            padding: 10px;
+            margin: 10px 0;
+            border-radius: 5px;
+            border: 1px solid #444;
+        }
+        input {
+            width: 100%;
+            background: #1a1a1a;
+            color: #fff;
+        }
+        button {
+            background: #4CAF50;
+            color: white;
+            border: none;
+            cursor: pointer;
+            font-weight: bold;
+            margin-right: 10px;
+        }
+        button:hover {
+            background: #45a049;
+        }
+        .result {
+            margin-top: 20px;
+            padding: 15px;
+            background: #1a1a1a;
+            border-radius: 5px;
+            border-left: 4px solid #4CAF50;
+        }
+        .error {
+            border-left-color: #f44336;
+        }
+        label {
+            display: block;
+            margin-bottom: 5px;
+            font-weight: bold;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>🔗 ChainChart Contract Test</h1>
+        <p>Connect to your deployed Neo N3 smart contract</p>
+        
+        <div>
+            <label>Contract Hash (from deployment modal):</label>
+            <input type="text" id="contractHash" placeholder="0xa34b5e45ab9f62f03ac244c04059388867360080" />
+        </div>
+        
+        <div>
+            <label>Method Name:</label>
+            <input type="text" id="methodName" placeholder="counter" value="counter" />
+        </div>
+        
+        <div>
+            <button onclick="callContract()">📖 Read Contract (counter)</button>
+            <button onclick="callMethod()">🔧 Call Custom Method</button>
+        </div>
+        
+        <div id="result"></div>
+    </div>
+
+    <!-- Load neon-js from CDN -->
+    <script src="https://cdn.jsdelivr.net/npm/@cityofzion/neon-js@latest/lib/browser/index.js"></script>
+    <script>
+        const RPC_URL = "http://seed3t5.neo.org:20332";
+        
+        async function callContract() {
+            const contractHash = document.getElementById('contractHash').value.trim();
+            const resultDiv = document.getElementById('result');
+            
+            if (!contractHash) {
+                resultDiv.innerHTML = '<div class="result error">❌ Please enter a contract hash</div>';
+                return;
+            }
+            
+            resultDiv.innerHTML = '<div class="result">Calling counter method... ⏳</div>';
+            
+            try {
+                const { rpc, sc, u } = window.neon;
+                const client = new rpc.RPCClient(RPC_URL);
+                
+                const script = sc.createScript({
+                    scriptHash: contractHash,
+                    operation: "counter",
+                    args: []
+                });
+                
+                const result = await client.invokeScript(u.HexString.fromHex(script));
+                
+                if (result.state === 'FAULT') {
+                    resultDiv.innerHTML = `<div class="result error">❌ Execution failed: ${result.exception || 'Unknown error'}</div>`;
+                    return;
+                }
+                
+                let value = null;
+                if (result.stack && result.stack.length > 0) {
+                    const stackItem = result.stack[0];
+                    value = stackItem.value !== undefined ? stackItem.value : stackItem;
+                }
+                
+                resultDiv.innerHTML = `
+                    <div class="result">
+                        <h3>✅ Success!</h3>
+                        <p><strong>Method:</strong> counter</p>
+                        <p><strong>Counter Value:</strong> ${value}</p>
+                        <p><strong>Gas Consumed:</strong> ${result.gasconsumed || 'N/A'}</p>
+                    </div>
+                `;
+            } catch (error) {
+                resultDiv.innerHTML = `<div class="result error">❌ Error: ${error.message}<br>Check console for details.</div>`;
+                console.error('Error:', error);
+            }
+        }
+        
+        async function callMethod() {
+            const contractHash = document.getElementById('contractHash').value.trim();
+            const methodName = document.getElementById('methodName').value.trim();
+            const resultDiv = document.getElementById('result');
+            
+            if (!contractHash) {
+                resultDiv.innerHTML = '<div class="result error">❌ Please enter a contract hash</div>';
+                return;
+            }
+            
+            if (!methodName) {
+                resultDiv.innerHTML = '<div class="result error">❌ Please enter a method name</div>';
+                return;
+            }
+            
+            resultDiv.innerHTML = `<div class="result">Calling ${methodName}... ⏳</div>`;
+            
+            try {
+                const { rpc, sc, u } = window.neon;
+                const client = new rpc.RPCClient(RPC_URL);
+                
+                const script = sc.createScript({
+                    scriptHash: contractHash,
+                    operation: methodName,
+                    args: []
+                });
+                
+                const result = await client.invokeScript(u.HexString.fromHex(script));
+                
+                if (result.state === 'FAULT') {
+                    resultDiv.innerHTML = `<div class="result error">❌ Execution failed: ${result.exception || 'Unknown error'}</div>`;
+                    return;
+                }
+                
+                let value = null;
+                if (result.stack && result.stack.length > 0) {
+                    const stackItem = result.stack[0];
+                    value = stackItem.value !== undefined ? stackItem.value : stackItem;
+                }
+                
+                resultDiv.innerHTML = `
+                    <div class="result">
+                        <h3>✅ Success!</h3>
+                        <p><strong>Method:</strong> ${methodName}</p>
+                        <p><strong>Result:</strong> ${JSON.stringify(value, null, 2)}</p>
+                        <p><strong>Gas Consumed:</strong> ${result.gasconsumed || 'N/A'}</p>
+                    </div>
+                `;
+            } catch (error) {
+                resultDiv.innerHTML = `<div class="result error">❌ Error: ${error.message}<br>Check console for details.</div>`;
+                console.error('Error:', error);
+            }
+        }
+    </script>
+</body>
+</html>
+

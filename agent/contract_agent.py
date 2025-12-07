@@ -71,17 +71,91 @@ class ContractAgent:
         
         # Step 3: Generate contract code using LLM
         try:
-            # Use LLM directly to generate contract
+            # Use LLM directly to generate contract (not the agent, which may return intermediate steps)
             # Build full prompt with structure details
             full_prompt = prompt + "\n\nStructure JSON:\n" + json.dumps(structure, indent=2)
             
-            # Call LLM - use the agent's run method or direct LLM call
-            # Try using agent.run() which should handle the LLM call
-            messages = [{"role": "user", "content": full_prompt}]
+            # Call agent.run() - it was working before, but may return intermediate steps
+            # We'll filter those out in the extraction logic
             response = await self.agent.run(full_prompt)
             
             # Extract code from response (may be wrapped in ```csharp``` or ```cs```)
-            contract_code = self._extract_code_from_response(str(response))
+            response_str = str(response)
+            print(f"\n{'='*80}")
+            print("🔍 LLM RESPONSE DEBUG:")
+            print(f"{'='*80}")
+            print(f"Response type: {type(response)}")
+            print(f"Response length: {len(response_str)} characters")
+            print(f"\nFirst 500 characters:")
+            print(response_str[:500])
+            print(f"\nLast 500 characters:")
+            print(response_str[-500:] if len(response_str) > 500 else response_str)
+            print(f"{'='*80}\n")
+            
+            contract_code = self._extract_code_from_response(response_str)
+            
+            print(f"\n{'='*80}")
+            print("🔍 EXTRACTED CODE DEBUG:")
+            print(f"{'='*80}")
+            print(f"Extracted length: {len(contract_code)} characters")
+            print(f"Has namespace: {'namespace' in contract_code}")
+            print(f"Has class: {'class' in contract_code}")
+            print(f"Has SmartContract: {'SmartContract' in contract_code}")
+            if contract_code:
+                print(f"\nFirst 300 characters of extracted code:")
+                print(contract_code[:300])
+            print(f"{'='*80}\n")
+            
+            # If extraction failed (empty or invalid), use fallback
+            # Check for valid C# code: must have class and SmartContract, namespace is optional
+            has_valid_structure = (
+                contract_code and 
+                contract_code.strip() and 
+                "class" in contract_code and 
+                "SmartContract" in contract_code
+            )
+            
+            if not has_valid_structure:
+                print("⚠️ LLM response did not contain valid C# code structure (missing class or SmartContract), using fallback contract generator")
+                return self._generate_fallback_contract(structure)
+            
+            # ALWAYS ensure namespace is ChainChartGenerated (replace any existing namespace)
+            import re
+            namespace_match = re.search(r'namespace\s+(\w+)', contract_code)
+            if namespace_match:
+                existing_namespace = namespace_match.group(1)
+                if existing_namespace != "ChainChartGenerated":
+                    print(f"⚠️ Replacing namespace '{existing_namespace}' with 'ChainChartGenerated'")
+                    contract_code = re.sub(
+                        r'namespace\s+\w+',
+                        'namespace ChainChartGenerated',
+                        contract_code
+                    )
+            else:
+                print("⚠️ LLM response missing namespace, wrapping in ChainChartGenerated namespace")
+                # Find where to insert namespace (after using statements)
+                if 'using' in contract_code:
+                    # Find the end of the last using statement
+                    using_lines = [line for line in contract_code.split('\n') if line.strip().startswith('using')]
+                    if using_lines:
+                        last_using_idx = contract_code.rfind(using_lines[-1])
+                        next_line = contract_code.find('\n', last_using_idx)
+                        if next_line >= 0:
+                            contract_code = (
+                                contract_code[:next_line+1] +
+                                '\nnamespace ChainChartGenerated\n{\n' +
+                                contract_code[next_line+1:] +
+                                '\n}'
+                            )
+                        else:
+                            contract_code = f"namespace ChainChartGenerated\n{{\n{contract_code}\n}}"
+                    else:
+                        contract_code = f"namespace ChainChartGenerated\n{{\n{contract_code}\n}}"
+                else:
+                    contract_code = f"namespace ChainChartGenerated\n{{\n{contract_code}\n}}"
+            
+            # Ensure contract has a unique name to avoid "Contract already exists" errors
+            contract_code = self._ensure_unique_contract_name(contract_code)
             
             return contract_code
             
@@ -186,8 +260,9 @@ class ContractAgent:
         prompt += """
 ## Requirements:
 
-1. Use Neo N3 C# contract template
-2. **CRITICAL: Include ALL required using statements at the top:**
+1. **CRITICAL: Generate a UNIQUE contract class name** - Use a descriptive name based on the diagram's purpose (e.g., "CounterContract", "TokenContract", "VotingContract") followed by a timestamp or unique identifier to ensure uniqueness. Example: "CounterContract_20250612" or "TokenContract_1734567890"
+2. Use Neo N3 C# contract template
+3. **CRITICAL: Include ALL required using statements at the top:**
    ```
    using Neo;
    using Neo.SmartContract.Framework;
@@ -235,70 +310,287 @@ class ContractAgent:
 - If an edge goes from Function → Condition: Condition is checked at start of function
 
 ## Important:
-- Return ONLY the C# code
+- **CRITICAL: Return ONLY the C# code, nothing else**
+- **DO NOT include any explanations, questions, or conversational text**
+- **DO NOT say "Thank you", "Let me", "I will", or ask for confirmation**
 - Wrap code in triple backticks: ```csharp
-- Do NOT include explanations or markdown outside code block
+- If you cannot generate code, return an empty response
 - Ensure code is valid, compilable Neo N3 contract
 - Use proper Neo storage patterns (StorageMap, StorageContext)
 - **The edges define the actual function logic - use them!**
 
-Generate the complete contract now:
+**Generate the complete contract code now (code only, no explanations):**
 """
         return prompt
     
+    def _ensure_unique_contract_name(self, contract_code: str) -> str:
+        """Ensure contract class name is ALWAYS unique by adding timestamp + random"""
+        import re
+        import time
+        import random
+        
+        # Find the class name in the contract
+        class_match = re.search(r'public\s+class\s+(\w+)\s*:\s*SmartContract', contract_code)
+        if not class_match:
+            # If no class found, try to find any class declaration
+            class_match = re.search(r'class\s+(\w+)\s*:\s*SmartContract', contract_code)
+        
+        if class_match:
+            original_name = class_match.group(1)
+            
+            # ALWAYS add a unique identifier (timestamp + random) to ensure uniqueness
+            # This ensures every contract gets a different name, even if code is identical
+            timestamp = str(int(time.time() * 1000))  # Use milliseconds for better precision
+            random_suffix = str(random.randint(1000, 9999))  # Add random 4-digit number
+            unique_id = f"{timestamp}_{random_suffix}"
+            
+            # Extract base name (remove any existing timestamp)
+            base_name = re.sub(r'_\d+(_\d+)?$', '', original_name)
+            if not base_name:
+                base_name = original_name
+            
+            new_name = f"{base_name}_{unique_id}"
+            
+            # Replace class name (handle both with and without "public")
+            contract_code = re.sub(
+                rf'\bclass\s+{re.escape(original_name)}\b',
+                f'class {new_name}',
+                contract_code
+            )
+            contract_code = re.sub(
+                rf'\bpublic\s+class\s+{re.escape(original_name)}\b',
+                f'public class {new_name}',
+                contract_code
+            )
+            
+            # ALWAYS ensure namespace is ChainChartGenerated (replace any existing namespace)
+            # Use a more robust pattern that handles namespaces with underscores and numbers
+            namespace_match = re.search(r'namespace\s+([\w_]+)', contract_code)
+            if namespace_match:
+                existing_namespace = namespace_match.group(1)
+                if existing_namespace != "ChainChartGenerated":
+                    # Replace the namespace with ChainChartGenerated (match the full namespace declaration)
+                    contract_code = re.sub(
+                        r'namespace\s+[\w_]+',
+                        'namespace ChainChartGenerated',
+                        contract_code
+                    )
+            else:
+                # No namespace found, wrap the code in ChainChartGenerated namespace
+                # Find the first using statement or class declaration
+                if 'using' in contract_code:
+                    # Insert namespace after using statements
+                    using_end = contract_code.rfind('using')
+                    if using_end >= 0:
+                        # Find the end of the last using statement
+                        next_line = contract_code.find('\n', using_end)
+                        if next_line >= 0:
+                            contract_code = (
+                                contract_code[:next_line+1] +
+                                '\nnamespace ChainChartGenerated\n{\n' +
+                                contract_code[next_line+1:] +
+                                '\n}'
+                            )
+                else:
+                    # No using statements, wrap entire code
+                    contract_code = f"namespace ChainChartGenerated\n{{\n{contract_code}\n}}"
+            
+            # Update ManifestExtra name if present
+            contract_code = re.sub(
+                r'(\[ManifestExtra\("name",\s*")' + re.escape(original_name) + r'("\)\])',
+                r'\1' + new_name + r'\2',
+                contract_code,
+                flags=re.IGNORECASE
+            )
+        else:
+            # No class found - add a default unique contract
+            import time
+            import random
+            timestamp = str(int(time.time() * 1000))
+            random_suffix = str(random.randint(1000, 9999))
+            unique_id = f"{timestamp}_{random_suffix}"
+            default_name = f"Contract_{unique_id}"
+            
+            # Try to inject a class if none exists (shouldn't happen, but just in case)
+            if "class" not in contract_code and "namespace" in contract_code:
+                # Add a basic class
+                contract_code = contract_code.replace(
+                    "namespace ChainChartGenerated",
+                    f"namespace ChainChartGenerated\n{{\n    public class {default_name} : SmartContract\n    {{\n        // Contract code\n    }}\n}}"
+                )
+        
+        return contract_code
+    
     def _extract_code_from_response(self, response: Any) -> str:
-        """Extract C# code from LLM response"""
+        """Extract C# code from LLM response, filtering out intermediate reasoning steps"""
+        import re
         response_str = str(response)
+        
+        # Filter out common intermediate reasoning patterns from ReAct agents
+        # These patterns indicate intermediate steps, not final code
+        intermediate_patterns = [
+            r"Step \d+:\s*Thinking completed",
+            r"Step \d+:\s*No action needed",
+            r"Task finished",
+            r"^Thinking:",
+            r"^Action:",
+            r"^Observation:",
+        ]
+        
+        for pattern in intermediate_patterns:
+            if re.search(pattern, response_str, re.IGNORECASE | re.MULTILINE):
+                print(f"   ⚠️ Detected intermediate reasoning pattern: {pattern}")
+                # Try to find code blocks after the intermediate text
+                # Look for the last code block in the response
+                code_blocks = re.findall(r'```(?:csharp|cs)?\s*\n(.*?)```', response_str, re.DOTALL)
+                if code_blocks:
+                    print(f"   ✅ Found {len(code_blocks)} code block(s) after intermediate text, using last one")
+                    return code_blocks[-1].strip()
+                # If no code blocks, continue with normal extraction
+        
+        print(f"🔍 Code extraction: Looking for code blocks...")
+        print(f"   Has ```csharp: {'```csharp' in response_str}")
+        print(f"   Has ```cs: {'```cs' in response_str}")
+        print(f"   Has ```: {'```' in response_str}")
+        print(f"   Has namespace: {'namespace' in response_str}")
+        print(f"   Has using: {'using' in response_str}")
         
         # Try to extract code from markdown code blocks
         if "```csharp" in response_str:
+            print("   ✅ Found ```csharp block")
             start = response_str.find("```csharp") + len("```csharp")
             end = response_str.find("```", start)
             if end > start:
-                return response_str[start:end].strip()
+                extracted = response_str[start:end].strip()
+                print(f"   ✅ Extracted {len(extracted)} characters from ```csharp block")
+                return extracted
+            else:
+                print("   ❌ ```csharp block found but no closing ```")
         elif "```cs" in response_str:
+            print("   ✅ Found ```cs block")
             start = response_str.find("```cs") + len("```cs")
             end = response_str.find("```", start)
             if end > start:
-                return response_str[start:end].strip()
+                extracted = response_str[start:end].strip()
+                print(f"   ✅ Extracted {len(extracted)} characters from ```cs block")
+                return extracted
+            else:
+                print("   ❌ ```cs block found but no closing ```")
         elif "```" in response_str:
+            print("   ✅ Found generic ``` block")
             start = response_str.find("```") + 3
             end = response_str.find("```", start)
             if end > start:
-                return response_str[start:end].strip()
+                extracted = response_str[start:end].strip()
+                print(f"   ✅ Extracted {len(extracted)} characters from generic ``` block")
+                return extracted
+            else:
+                print("   ❌ ``` block found but no closing ```")
         
-        # If no code blocks, return response as-is
+        # If no code blocks, try to find C# code patterns
+        # Look for namespace or using statements (indicates C# code)
+        if "namespace" in response_str or "using" in response_str:
+            print("   ✅ Found namespace or using statements, attempting extraction...")
+            # Try to extract complete contract - from first "using" to matching closing braces
+            using_start = response_str.find("using")
+            if using_start >= 0:
+                print(f"   Found 'using' at position {using_start}")
+                # Find all opening and closing braces to match them properly
+                brace_count = 0
+                start_idx = using_start
+                last_brace_idx = -1
+                
+                # Find the first opening brace after "using" statements
+                for i in range(using_start, len(response_str)):
+                    if response_str[i] == '{':
+                        if brace_count == 0:
+                            start_idx = using_start  # Start from first "using"
+                        brace_count += 1
+                    elif response_str[i] == '}':
+                        brace_count -= 1
+                        if brace_count == 0:
+                            last_brace_idx = i
+                            break
+                
+                if last_brace_idx > using_start:
+                    extracted = response_str[using_start:last_brace_idx + 1].strip()
+                    print(f"   ✅ Extracted {len(extracted)} characters using brace matching")
+                    # Verify it looks like valid C# code
+                    if "class" in extracted and "SmartContract" in extracted:
+                        print(f"   ✅ Extracted code contains 'class' and 'SmartContract'")
+                        return extracted
+                    else:
+                        print(f"   ⚠️ Extracted code missing 'class' or 'SmartContract'")
+                        print(f"      Has 'class': {'class' in extracted}")
+                        print(f"      Has 'SmartContract': {'SmartContract' in extracted}")
+                else:
+                    print(f"   ❌ Could not find matching braces (last_brace_idx: {last_brace_idx}, using_start: {using_start})")
+            
+            # Fallback: Try to extract code between namespace and closing brace
+            namespace_match = re.search(r'(namespace\s+\w+\s*\{[\s\S]*?\})', response_str, re.MULTILINE | re.DOTALL)
+            if namespace_match:
+                extracted = namespace_match.group(1).strip()
+                print(f"   ✅ Extracted {len(extracted)} characters using namespace regex")
+                if "class" in extracted:
+                    print(f"   ✅ Extracted code contains 'class'")
+                    return extracted
+                else:
+                    print(f"   ⚠️ Extracted code missing 'class'")
+        
+        # If still no code found, the LLM might have given a conversational response
+        # Return empty string to trigger fallback
+        conversational_phrases = ["thank you", "please confirm", "let me", "i will", "could you",
+                                  "proceed step by step", "if yes", "if you want"]
+        found_phrases = [phrase for phrase in conversational_phrases if phrase in response_str.lower()]
+        if found_phrases:
+            print(f"   ⚠️ Detected conversational phrases: {found_phrases}")
+            print("   ❌ Returning empty string to trigger fallback")
+            return ""  # Empty string will trigger fallback contract generation
+        
+        # Last resort: return response as-is (might be valid code without code blocks)
+        print(f"   ⚠️ No code blocks found, returning response as-is ({len(response_str)} chars)")
         return response_str.strip()
     
     def _generate_fallback_contract(self, structure: Dict[str, Any]) -> str:
         """Generate basic contract structure if LLM fails"""
-        contract = """using Neo;
-using Neo.SmartContract;
+        import time
+        import random
+        # Use milliseconds + random for better uniqueness
+        timestamp = str(int(time.time() * 1000))
+        random_suffix = str(random.randint(1000, 9999))
+        contract_name = f"ChainChartContract_{timestamp}_{random_suffix}"
+        
+        contract = f"""using Neo;
 using Neo.SmartContract.Framework;
 using Neo.SmartContract.Framework.Attributes;
 using Neo.SmartContract.Framework.Services;
 using System;
+using System.Numerics;
 
-namespace ChainChartContract
-{
-    [DisplayName("ChainChartContract")]
+namespace ChainChartGenerated
+{{
     [ManifestExtra("Author", "ChainChart")]
-    [ManifestExtra("Description", "Generated from ChainChart diagram")]
-    public class ChainChartContract : SmartContract
-    {
+    [ManifestExtra("Description", "Generated from ChainChart diagram (fallback)")]
+    public class {contract_name} : SmartContract
+    {{
 """
         
         # Add storage variables
         for var in structure.get("variables", []):
             var_name = var['name']
-            contract += f"        private static StorageMap {var_name}Map => new StorageMap(Storage.CurrentContext, \"{var_name}\");\n"
+            # Sanitize variable name for C# identifier
+            var_name_safe = var_name.replace(' ', '_').replace('-', '_')
+            contract += f"        private static readonly StorageMap {var_name_safe}Map = new StorageMap(Storage.CurrentContext, \"{var_name}\");\n"
         
         # Add events
         for event in structure.get("events", []):
             event_name = event['name']
             params_str = event.get('parameters', '') or ''
-            contract += f"        [DisplayName(\"{event_name}\")]\n"
-            contract += f"        public static event Action<{params_str}> {event_name};\n\n"
+            # Use Action without parameters if params_str is empty
+            if params_str:
+                contract += f"        public static event Action<{params_str}> {event_name};\n\n"
+            else:
+                contract += f"        public static event Action {event_name};\n\n"
         
         # Add functions
         for func in structure.get("functions", []):

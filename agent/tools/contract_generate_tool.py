@@ -172,3 +172,4 @@ class ContractGenerateTool(BaseTool):
         }
 
 
+

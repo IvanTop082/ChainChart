@@ -7,3 +7,4 @@ console.log("Public Key:", acct.publicKey);
 console.log("Private Key (HEX):", acct.privateKey);   // This is what you put in NEO_PRIVATE_KEY
 console.log("Private Key (WIF):", acct.WIF);
 
+

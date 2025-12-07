@@ -343,3 +343,4 @@ def deploy_contract_neonova_rpc_style(
         }
 
 
+

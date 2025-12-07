@@ -16,3 +16,4 @@ for var in vars_to_check:
 print("=" * 60)
 
 
+

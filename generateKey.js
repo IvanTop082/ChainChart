@@ -8,3 +8,4 @@ console.log("Private Key (HEX):", acct.privateKey);   // This is what you put in
 console.log("Private Key (WIF):", acct.WIF);
 
 
+

@@ -222,6 +222,56 @@ def validate_contract(contract_code: str) -> Tuple[bool, List[str], str]:
     
     fixed_code = '\n'.join(lines)
     
+    # Check 3.75: Fix StorageMap Get/Put using prefix as key (common bug)
+    # Pattern: StorageMap CounterMap = new StorageMap(..., "counter"); CounterMap.Get("counter")
+    # Should be: CounterMap.Get(ByteString.Empty)
+    # This fixes the bug where prefix is used as key again, creating "countercounter" key
+    import re
+    
+    # Find all StorageMap declarations with their prefixes
+    # Handle both: new StorageMap(...) and new(...) syntax
+    storage_map_patterns = [
+        r'StorageMap\s+(\w+)\s*=\s*new\s+StorageMap\([^,]+,\s*"([^"]+)"\)',  # new StorageMap(...)
+        r'StorageMap\s+(\w+)\s*=\s*new\([^,]+,\s*"([^"]+)"\)',  # new(...)
+        r'readonly\s+StorageMap\s+(\w+)\s*=\s*new\([^,]+,\s*"([^"]+)"\)',  # readonly StorageMap ... = new(...)
+    ]
+    
+    storage_maps = {}
+    for pattern in storage_map_patterns:
+        for match in re.finditer(pattern, fixed_code):
+            map_var = match.group(1)  # e.g., "CounterMap"
+            prefix = match.group(2)   # e.g., "counter"
+            storage_maps[map_var] = prefix
+    
+    # Fix Get() calls that use the prefix as key
+    for map_var, prefix in storage_maps.items():
+        # Pattern: CounterMap.Get("counter") -> CounterMap.Get(ByteString.Empty)
+        # Also handle case variations
+        patterns = [
+            (rf'{re.escape(map_var)}\.Get\("{re.escape(prefix)}"\)', f'{map_var}.Get(ByteString.Empty)'),
+            (rf'{re.escape(map_var)}\.Get\(\'{re.escape(prefix)}\'\)', f'{map_var}.Get(ByteString.Empty)'),
+            # Case-insensitive match
+            (rf'{re.escape(map_var)}\.Get\("{re.escape(prefix.lower())}"\)', f'{map_var}.Get(ByteString.Empty)'),
+            (rf'{re.escape(map_var)}\.Get\("{re.escape(prefix.upper())}"\)', f'{map_var}.Get(ByteString.Empty)'),
+        ]
+        
+        for pattern, replacement in patterns:
+            if re.search(pattern, fixed_code, re.IGNORECASE):
+                fixed_code = re.sub(pattern, replacement, fixed_code, flags=re.IGNORECASE)
+        
+        # Fix Put() calls that use the prefix as key
+        # Need to handle Put("counter", value) - match the opening quote and key, but not the closing
+        patterns = [
+            (rf'{re.escape(map_var)}\.Put\("{re.escape(prefix)}"', f'{map_var}.Put(ByteString.Empty'),
+            (rf'{re.escape(map_var)}\.Put\(\'{re.escape(prefix)}\'', f'{map_var}.Put(ByteString.Empty'),
+            (rf'{re.escape(map_var)}\.Put\("{re.escape(prefix.lower())}"', f'{map_var}.Put(ByteString.Empty'),
+            (rf'{re.escape(map_var)}\.Put\("{re.escape(prefix.upper())}"', f'{map_var}.Put(ByteString.Empty'),
+        ]
+        
+        for pattern, replacement in patterns:
+            if re.search(pattern, fixed_code, re.IGNORECASE):
+                fixed_code = re.sub(pattern, replacement, fixed_code, flags=re.IGNORECASE)
+    
     # Check 4: Storage variables use StorageMap correctly
     if "StorageMap" in fixed_code and "Storage.CurrentContext" not in fixed_code:
         errors.append("StorageMap should use Storage.CurrentContext")

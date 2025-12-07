@@ -16,18 +16,18 @@ namespace ChainChartGenerated
         private static readonly UInt160 Owner = default;
 
         // Storage Variables
-        private static StorageMap NewstateMap => new StorageMap(Storage.CurrentContext, "New state");
-        private static BigInteger Newstate
+        private static StorageMap counterMap => new StorageMap(Storage.CurrentContext, "counter");
+        private static BigInteger counter
         {
             get
             {
-                var value = NewstateMap.Get(ByteString.Empty);
+                var value = counterMap.Get(ByteString.Empty);
                 return value is null ? 0 : (BigInteger)value;
             }
         }
-        private static void SetNewstate(BigInteger value)
+        private static void SetCounter(BigInteger value)
         {
-            NewstateMap.Put(ByteString.Empty, (ByteString)value);
+            counterMap.Put(ByteString.Empty, (ByteString)value);
         }
 
         // Owner Check Modifier
@@ -37,14 +37,12 @@ namespace ChainChartGenerated
         }
 
         // Events
-        public static event Action<string> Newevent;
-
-        public static event Action<string> Newevent_node_1765036005524_913;
+        public static event Action<string> Log;
 
         // Functions
-        public static void Newfunction()
+        public static void increment()
         {
-            // TODO: Implement function logic based on connected nodes
+            // Add your logic here
         }
 
     }

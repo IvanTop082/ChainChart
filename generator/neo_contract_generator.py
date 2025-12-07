@@ -83,10 +83,14 @@ def generate_functions(nodes: List[Dict[str, Any]], edges: List[Dict[str, Any]])
     # Track seen function names to prevent duplicates
     seen_names = set()
     
+    # Create a map of node IDs to nodes for quick lookup
+    node_map = {n.get("id"): n for n in nodes}
+    
     for node in function_nodes:
         node_data = node.get("data", {})
         func_name = node_data.get("name", f"function_{node.get('id', '')}")
         params = node_data.get("params", [])
+        return_type = node_data.get("returnType", "")
         visibility = node_data.get("visibility", "public")
         payable = node_data.get("payable", False)
         node_id = node.get("id", "")
@@ -99,19 +103,31 @@ def generate_functions(nodes: List[Dict[str, Any]], edges: List[Dict[str, Any]])
             func_name = f"{func_name}_{node_id}"
         seen_names.add(func_name)
         
-        # Parse parameters
+        # Parse parameters - handle multiple formats
         param_list = []
         if isinstance(params, list):
             for param in params:
-                if isinstance(param, str):
-                    # Parse "Type name" format
+                if isinstance(param, dict):
+                    # Handle object format: {"name": "x", "type": "Integer"}
+                    param_name = sanitize_identifier(param.get("name", ""))
+                    param_type_str = param.get("type", "string")
+                    param_type = map_type_to_neo(param_type_str)
+                    if param_name:
+                        param_list.append(f"{param_type} {param_name}")
+                elif isinstance(param, str):
+                    # Parse "Type name" format (e.g., "address to", "uint256 amount")
                     parts = param.strip().split()
                     if len(parts) >= 2:
                         param_type = map_type_to_neo(parts[0])
                         param_name = sanitize_identifier(parts[1])
                         param_list.append(f"{param_type} {param_name}")
+                    elif len(parts) == 1:
+                        # Just a type, generate a name
+                        param_type = map_type_to_neo(parts[0])
+                        param_name = f"param{len(param_list)}"
+                        param_list.append(f"{param_type} {param_name}")
         elif isinstance(params, str) and params:
-            # Parse comma-separated string
+            # Parse comma-separated string (e.g., "address to, uint256 amount")
             for param in params.split(","):
                 param = param.strip()
                 if param:
@@ -120,16 +136,224 @@ def generate_functions(nodes: List[Dict[str, Any]], edges: List[Dict[str, Any]])
                         param_type = map_type_to_neo(parts[0])
                         param_name = sanitize_identifier(parts[1])
                         param_list.append(f"{param_type} {param_name}")
+                    elif len(parts) == 1:
+                        # Just a type, generate a name
+                        param_type = map_type_to_neo(parts[0])
+                        param_name = f"param{len(param_list)}"
+                        param_list.append(f"{param_type} {param_name}")
         
         params_str = ", ".join(param_list) if param_list else ""
         payable_attr = " payable" if payable else ""
         
-        code += f"        public static void {func_name}({params_str}){payable_attr}\n"
+        # Determine return type
+        if return_type:
+            return_type_cs = map_type_to_neo(return_type)
+        else:
+            return_type_cs = "void"
+        
+        # Generate function body based on connected nodes
+        function_body = generate_function_body(node_id, nodes, edges, node_map)
+        
+        code += f"        public static {return_type_cs} {func_name}({params_str}){payable_attr}\n"
         code += "        {\n"
-        code += "            // TODO: Implement function logic based on connected nodes\n"
+        code += function_body
         code += "        }\n\n"
     
     return code
+
+
+def generate_function_body(function_id: str, nodes: List[Dict[str, Any]], edges: List[Dict[str, Any]], node_map: Dict[str, Dict[str, Any]]) -> str:
+    """
+    Generate function body code by tracing edges from function node.
+    
+    Args:
+        function_id: ID of the function node
+        nodes: List of all nodes
+        edges: List of all edges
+        node_map: Map of node ID to node for quick lookup
+        
+    Returns:
+        C# code string for function body
+    """
+    body_lines = []
+    
+    # Find all edges starting from this function
+    outgoing_edges = [e for e in edges if e.get("from") == function_id]
+    
+    if not outgoing_edges:
+        # No connections, return empty body with comment
+        return "            // Add your logic here\n"
+    
+    # Find state nodes for reference
+    state_nodes = {n.get("id"): n for n in nodes if n.get("type") == "state"}
+    
+    # Build execution path by following edges
+    visited = set()
+    execution_order = []
+    
+    def trace_path(current_id: str, depth: int = 0):
+        """Recursively trace execution path from current node."""
+        if depth > 20:  # Prevent infinite loops
+            return
+        if current_id in visited:
+            return
+        
+        visited.add(current_id)
+        current_node = node_map.get(current_id)
+        if not current_node:
+            return
+        
+        node_type = current_node.get("type")
+        node_data = current_node.get("data", {})
+        
+        # Add to execution order
+        execution_order.append((current_id, node_type, node_data, current_node))
+        
+        # Find next nodes
+        next_edges = [e for e in edges if e.get("from") == current_id]
+        for edge in next_edges:
+            next_id = edge.get("to")
+            if next_id and next_id not in visited:
+                trace_path(next_id, depth + 1)
+    
+    # Start tracing from connected nodes
+    for edge in outgoing_edges:
+        next_id = edge.get("to")
+        if next_id:
+            trace_path(next_id)
+    
+    # Generate code for each node in execution order
+    for node_id, node_type, node_data, node in execution_order:
+        if node_type == "operation":
+            # Generate operation code
+            op_code = generate_operation_code(node_id, node_data, nodes, edges, node_map, state_nodes)
+            if op_code:
+                body_lines.append(op_code)
+        
+        elif node_type == "condition":
+            # Generate condition code
+            condition_code = generate_condition_code(node_id, node_data, nodes, edges, node_map)
+            if condition_code:
+                body_lines.append(condition_code)
+        
+        elif node_type == "state":
+            # State nodes are targets, not sources of operations
+            # But we might need to read from them
+            pass
+        
+        elif node_type == "event":
+            # Generate event emission
+            event_name = sanitize_identifier(node_data.get("name", "Event"))
+            body_lines.append(f"            {event_name}?.Invoke(\"\");")
+    
+    if not body_lines:
+        return "            // Add your logic here\n"
+    
+    return "\n".join(body_lines) + "\n"
+
+
+def generate_operation_code(op_id: str, op_data: Dict[str, Any], nodes: List[Dict[str, Any]], edges: List[Dict[str, Any]], node_map: Dict[str, Dict[str, Any]], state_nodes: Dict[str, Dict[str, Any]]) -> str:
+    """Generate C# code for an operation node."""
+    op = op_data.get("op", "add")
+    operand_a = op_data.get("operand_a", op_data.get("a", ""))
+    operand_b = op_data.get("operand_b", op_data.get("b", ""))
+    value = op_data.get("value", "")
+    
+    # Check if this operation connects to a state node (for storage updates)
+    next_edges = [e for e in edges if e.get("from") == op_id]
+    target_state = None
+    for edge in next_edges:
+        target_id = edge.get("to")
+        if target_id in state_nodes:
+            target_state = state_nodes[target_id]
+            break
+    
+    # If there's a value expression, try to use it
+    if value:
+        # Try to convert the value expression to C# code
+        code = value
+        
+        # Replace state variable references with actual variable names
+        for state_id, state_node in state_nodes.items():
+            state_label = state_node.get("data", {}).get("label", "")
+            if state_label:
+                state_var = sanitize_identifier(state_label)
+                # Replace state references (handle both with and without spaces)
+                code = code.replace(state_label, state_var)
+                # Also try replacing with sanitized version
+                code = code.replace(state_label.replace(" ", ""), state_var)
+        
+        # If operation targets a state node, generate storage update
+        if target_state:
+            state_label = target_state.get("data", {}).get("label", "")
+            state_var = sanitize_identifier(state_label)
+            # Extract the right-hand side of the expression
+            if "=" in code:
+                # Already has assignment
+                return f"            Set{state_var.capitalize()}({code.split('=')[1].strip()});"
+            else:
+                # Need to evaluate expression and store
+                return f"            Set{state_var.capitalize()}({code});"
+        
+        # Handle assignment operations
+        if "=" in code and "==" not in code:
+            # This is an assignment
+            return f"            {code};"
+        elif code.endswith(";"):
+            return f"            {code}"
+        else:
+            return f"            {code};"
+    
+    # Generate based on operation type
+    if target_state:
+        # Operation updates a state variable
+        state_label = target_state.get("data", {}).get("label", "")
+        state_var = sanitize_identifier(state_label)
+        
+        if op == "add" or op == "+":
+            if operand_b:
+                return f"            Set{state_var.capitalize()}({state_var} + {operand_b});"
+            else:
+                return f"            Set{state_var.capitalize()}({state_var} + 1);"
+        elif op == "subtract" or op == "-":
+            if operand_b:
+                return f"            Set{state_var.capitalize()}({state_var} - {operand_b});"
+            else:
+                return f"            Set{state_var.capitalize()}({state_var} - 1);"
+        elif op == "multiply" or op == "*":
+            return f"            Set{state_var.capitalize()}({state_var} * {operand_b});"
+        elif op == "divide" or op == "/":
+            return f"            Set{state_var.capitalize()}({state_var} / {operand_b});"
+        else:
+            return f"            // Operation: {op} on {state_var}"
+    else:
+        # Generic operation without state target
+        if op == "add" or op == "+":
+            return f"            {operand_a} = {operand_a} + {operand_b};"
+        elif op == "subtract" or op == "-":
+            return f"            {operand_a} = {operand_a} - {operand_b};"
+        elif op == "multiply" or op == "*":
+            return f"            {operand_a} = {operand_a} * {operand_b};"
+        elif op == "divide" or op == "/":
+            return f"            {operand_a} = {operand_a} / {operand_b};"
+        else:
+            # Generic operation
+            if operand_a and operand_b:
+                return f"            // Operation: {op} on {operand_a} and {operand_b}"
+            else:
+                return f"            // Operation: {op}"
+
+
+def generate_condition_code(condition_id: str, condition_data: Dict[str, Any], nodes: List[Dict[str, Any]], edges: List[Dict[str, Any]], node_map: Dict[str, Dict[str, Any]]) -> str:
+    """Generate C# code for a condition node (if/else)."""
+    expression = condition_data.get("expression", "true")
+    
+    # Find true and false paths
+    true_path_edges = [e for e in edges if e.get("from") == condition_id]
+    # In Neo, we'll generate a simple if statement
+    # For now, just generate the condition check
+    
+    return f"            if ({expression})\n            {{\n                // True path\n            }}\n            else\n            {{\n                // False path\n            }}"
 
 
 def generate_events(nodes: List[Dict[str, Any]]) -> str:

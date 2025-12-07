@@ -299,7 +299,26 @@ class ContractAgent:
     - CORRECT: `ByteString value = storageMap.Get(key); return value is null ? 0 : (BigInteger)value;`
     - Or: `var value = storageMap.Get(key); return value is null ? 0 : (BigInteger)value;`
     - Always use `is null` check with ternary operator, NOT `??` operator
-15. Follow Neo N3 best practices
+15. **CRITICAL: StorageMap prefix + key usage**
+    - When you create `StorageMap CounterMap = new StorageMap(Storage.CurrentContext, "counter")`, the prefix is "counter"
+    - To access the value, use `ByteString.Empty` as the key, NOT the prefix again
+    - WRONG: `CounterMap.Get("counter")` - This creates storage key "countercounter" which is incorrect
+    - CORRECT: `CounterMap.Get(ByteString.Empty)` - This creates storage key "counter" which is correct
+    - WRONG: `CounterMap.Put("counter", value)` - This stores at "countercounter"
+    - CORRECT: `CounterMap.Put(ByteString.Empty, value)` - This stores at "counter"
+    - Example for counter contract:
+      ```csharp
+      private static readonly StorageMap CounterMap = new(Storage.CurrentContext, "counter");
+      
+      public static void increment()
+      {
+          ByteString value = CounterMap.Get(ByteString.Empty);  // ✅ Correct
+          BigInteger counter = value is null ? 0 : (BigInteger)value;
+          counter = counter + 1;
+          CounterMap.Put(ByteString.Empty, counter);  // ✅ Correct
+      }
+      ```
+16. Follow Neo N3 best practices
 
 ## Edge-Based Logic Construction:
 
@@ -531,8 +550,23 @@ class ContractAgent:
             if namespace_match:
                 extracted = namespace_match.group(1).strip()
                 print(f"   ✅ Extracted {len(extracted)} characters using namespace regex")
-                if "class" in extracted:
-                    print(f"   ✅ Extracted code contains 'class'")
+                
+                # Check for conversational phrases BEFORE returning (Bug 3 fix)
+                conversational_phrases = ["thank you", "please confirm", "let me", "i will", "could you",
+                                          "proceed step by step", "if yes", "if you want"]
+                found_phrases = [phrase for phrase in conversational_phrases if phrase in response_str.lower()]
+                if found_phrases:
+                    print(f"   ⚠️ Detected conversational phrases in response: {found_phrases}")
+                    print("   ❌ Returning empty string to trigger fallback (invalid LLM response)")
+                    return ""  # Empty string will trigger fallback contract generation
+                
+                # Validate extracted code contains essential elements
+                if "class" in extracted and "SmartContract" in extracted:
+                    print(f"   ✅ Extracted code contains 'class' and 'SmartContract'")
+                    return extracted
+                elif "class" in extracted:
+                    print(f"   ⚠️ Extracted code contains 'class' but missing 'SmartContract'")
+                    # Still return it, but log warning
                     return extracted
                 else:
                     print(f"   ⚠️ Extracted code missing 'class'")

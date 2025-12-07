@@ -25,6 +25,7 @@ import os
 import json
 import shutil
 import sys
+import base64
 from pathlib import Path as PathLib
 
 # Load .env file at startup (before Supabase import so env vars are available)
@@ -64,16 +65,19 @@ app = FastAPI(title="ChainChart API", version="1.0.0")
 
 # CORS middleware to allow UI to connect
 # Allow all localhost ports for development (more flexible)
+# Note: FastAPI's CORSMiddleware supports allow_origin_regex for regex patterns
+import re
+
 app.add_middleware(
     CORSMiddleware,
+    # Use regex pattern to allow any localhost port (Bug 1 fix: regex patterns now work correctly)
+    allow_origin_regex=r"http://(localhost|127\.0\.0\.1):\d+",
+    # Also allow specific common ports as exact matches
     allow_origins=[
         "http://localhost:3000",
         "http://localhost:3001",
         "http://127.0.0.1:3000",
         "http://127.0.0.1:3001",
-        # Allow any localhost port for development
-        r"http://localhost:\d+",
-        r"http://127.0.0.1:\d+",
     ],
     allow_credentials=True,
     allow_methods=["*"],
@@ -102,15 +106,37 @@ async def get_generated_file(filename: str):
 
 
 @app.get("/api/contract/latest")
-async def get_latest_contract():
+async def get_latest_contract(user_id: Optional[str] = None, project_id: Optional[str] = None):
     """
     Get the latest generated NEF and manifest files.
     Returns both as base64-encoded NEF and JSON manifest.
+    Tries Supabase first, falls back to local filesystem.
     """
     import base64
     import os
     
-    # Get absolute path for better error messages
+    # Try Supabase first if user_id is provided
+    if SUPABASE_AVAILABLE and user_id:
+        try:
+            contract_data = await get_latest_contract_for_user(
+                user_id=user_id,
+                project_id=project_id
+            )
+            if contract_data:
+                nef_bytes = contract_data.get("nef_data")
+                manifest_data = contract_data.get("manifest_data")
+                if nef_bytes and manifest_data:
+                    return {
+                        "nef": base64.b64encode(nef_bytes).decode('utf-8'),
+                        "manifest": manifest_data,
+                        "contract_name": contract_data.get("contract_name"),
+                        "source": "supabase"
+                    }
+        except Exception as e:
+            logger = logging.getLogger(__name__)
+            logger.warning(f"Failed to fetch from Supabase: {e}, falling back to local filesystem")
+    
+    # Fallback to local filesystem
     nef_path = generated_contracts_dir / "contract.nef"
     manifest_path = generated_contracts_dir / "contract.manifest.json"
     
@@ -156,7 +182,8 @@ async def get_latest_contract():
         return {
             "nefBase64": nef_base64,
             "manifest": manifest_json,
-            "success": True
+            "success": True,
+            "source": "filesystem"
         }
     except json.JSONDecodeError as e:
         raise HTTPException(status_code=500, detail=f"Failed to parse manifest JSON: {str(e)}")
@@ -223,6 +250,7 @@ class ContractDeployRequest(BaseModel):
     private_key: str = None  # Optional private key for signing
     contract_id: Optional[str] = None  # Supabase contract ID (will fetch from Supabase if provided)
     user_id: Optional[str] = None  # User ID for Supabase lookup
+    project_id: Optional[str] = None  # Project ID for Supabase lookup (optional)
 
 
 class ContractDeployResponse(BaseModel):
@@ -685,10 +713,11 @@ async def deploy_contract_endpoint(request: ContractDeployRequest = ContractDepl
     logger = logging.getLogger(__name__)
     
     try:
-        # Step 1: Try to fetch from Supabase if contract_id is provided
+        # Step 1: Try to fetch from Supabase FIRST (primary source)
         nef_bytes = None
         manifest_data = None
         
+        # Try Supabase if contract_id is provided
         if SUPABASE_AVAILABLE and request.contract_id:
             logger.info(f"📦 Fetching contract from Supabase: {request.contract_id}")
             contract_data = await get_contract_from_supabase(
@@ -702,39 +731,49 @@ async def deploy_contract_endpoint(request: ContractDeployRequest = ContractDepl
             else:
                 logger.warning(f"⚠️ Contract not found in Supabase: {request.contract_id}")
         
-        # Always use generated contracts from generated_contracts/ (created by SpoonOS via /export-contract)
+        # If no contract_id but user_id provided, try to get latest contract from Supabase
+        if not nef_bytes and SUPABASE_AVAILABLE and request.user_id:
+            logger.info(f"📦 Fetching latest contract from Supabase for user: {request.user_id}")
+            contract_data = await get_latest_contract_for_user(
+                user_id=request.user_id,
+                project_id=request.project_id
+            )
+            if contract_data:
+                nef_bytes = contract_data.get("nef_data")
+                manifest_data = contract_data.get("manifest_data")
+                logger.info(f"✅ Latest contract fetched from Supabase: {contract_data.get('contract_name')}")
+        
+        # Fallback to local filesystem only if Supabase didn't provide data
         generated_contracts_dir = Path("generated_contracts")
-        
-        # Try to find the most recent uniquely named contract files (preferred)
-        # These have the correct unique manifest name
         latest_contract_files = None
-        if generated_contracts_dir.exists():
-            # Find all .nef files with unique names (not just "contract.nef")
-            nef_files = list(generated_contracts_dir.glob("*_*.nef"))
-            if nef_files:
-                # Sort by modification time, get the most recent
-                latest_nef = max(nef_files, key=lambda p: p.stat().st_mtime)
-                # Find corresponding manifest
-                contract_base = latest_nef.stem  # e.g., "CounterContract_1765065363870_3421"
-                latest_manifest = generated_contracts_dir / f"{contract_base}.manifest.json"
-                if latest_manifest.exists():
-                    latest_contract_files = (latest_nef, latest_manifest)
-                    logger.info(f"📦 Found latest uniquely named contract: {contract_base}")
-        
-        # Fallback to generic files if no uniquely named files found
         default_nef = generated_contracts_dir / "contract.nef"
         default_manifest = generated_contracts_dir / "contract.manifest.json"
         
+        if not nef_bytes or not manifest_data:
+            # Try to find the most recent uniquely named contract files (preferred)
+            if generated_contracts_dir.exists():
+                nef_files = list(generated_contracts_dir.glob("*_*.nef"))
+                if nef_files:
+                    latest_nef = max(nef_files, key=lambda p: p.stat().st_mtime)
+                    contract_base = latest_nef.stem
+                    latest_manifest = generated_contracts_dir / f"{contract_base}.manifest.json"
+                    if latest_manifest.exists():
+                        latest_contract_files = (latest_nef, latest_manifest)
+                        logger.info(f"📦 Found latest contract in local filesystem: {contract_base}")
+        
         # Determine source of NEF and manifest
+        # Note: For deployment, we need files on disk, so we'll create them temporarily
         if nef_bytes and manifest_data:
-            # Use data from Supabase
-            with tempfile.TemporaryDirectory() as temp_dir:
-                temp_path = Path(temp_dir)
-                nef_file = temp_path / "contract.nef"
-                manifest_file = temp_path / "contract.manifest.json"
-                
-                nef_file.write_bytes(nef_bytes)
-                manifest_file.write_text(json.dumps(manifest_data, indent=2), encoding='utf-8')
+            # Use data from Supabase - create files in generated_contracts/ for deployment
+            # (Deployment tools need files on disk, but Supabase is our primary storage)
+            generated_contracts_dir.mkdir(exist_ok=True)
+            nef_file = generated_contracts_dir / "contract.nef"
+            manifest_file = generated_contracts_dir / "contract.manifest.json"
+            
+            nef_file.write_bytes(nef_bytes)
+            manifest_file.write_text(json.dumps(manifest_data, indent=2), encoding='utf-8')
+            
+            logger.info(f"📦 Using contract files from Supabase (copied to local for deployment)")
         elif request and request.nef and request.manifest:
             # Use provided files (if passed directly in request)
             with tempfile.TemporaryDirectory() as temp_dir:
@@ -755,6 +794,15 @@ async def deploy_contract_endpoint(request: ContractDeployRequest = ContractDepl
                 
                 # Write manifest
                 manifest_file.write_text(json.dumps(request.manifest, indent=2), encoding='utf-8')
+                
+                # Copy files to persistent location BEFORE temp directory is deleted
+                generated_contracts_dir.mkdir(exist_ok=True)
+                target_nef = generated_contracts_dir / "contract.nef"
+                target_manifest = generated_contracts_dir / "contract.manifest.json"
+                shutil.copy2(nef_file, target_nef)
+                shutil.copy2(manifest_file, target_manifest)
+                nef_file = target_nef
+                manifest_file = target_manifest
         elif latest_contract_files:
             # Use the most recent uniquely named contract files (preferred - has correct manifest name)
             nef_file, manifest_file = latest_contract_files
@@ -783,15 +831,22 @@ async def deploy_contract_endpoint(request: ContractDeployRequest = ContractDepl
             )
         
         # Step 2: Ensure files are in generated_contracts/ for RPC deployment
-        generated_contracts_dir.mkdir(exist_ok=True)
-        target_nef = generated_contracts_dir / "contract.nef"
-        target_manifest = generated_contracts_dir / "contract.manifest.json"
-        
-        # Copy files if they're not already in the target location
-        if str(nef_file) != str(target_nef):
-            shutil.copy2(nef_file, target_nef)
-        if str(manifest_file) != str(target_manifest):
-            shutil.copy2(manifest_file, target_manifest)
+        # (Only needed if files came from local filesystem, Supabase files are already there)
+        if nef_bytes and manifest_data:
+            # Files from Supabase are already in generated_contracts/
+            target_nef = nef_file
+            target_manifest = manifest_file
+        else:
+            # Files from local filesystem - ensure they're in the right place
+            generated_contracts_dir.mkdir(exist_ok=True)
+            target_nef = generated_contracts_dir / "contract.nef"
+            target_manifest = generated_contracts_dir / "contract.manifest.json"
+            
+            # Copy files if they're not already in the target location
+            if str(nef_file) != str(target_nef):
+                shutil.copy2(nef_file, target_nef)
+            if str(manifest_file) != str(target_manifest):
+                shutil.copy2(manifest_file, target_manifest)
         
         # Get private key from request or environment (needed for both deployment methods)
         # 1. Get private key from multiple sources
@@ -1404,111 +1459,84 @@ async def export_contract(request: ContractGenerateRequest):
                         manifest_path=None
                     )
             
-            # Step 5: Copy compiled files to persistent directory with unique names
-            persistent_nef_path = generated_contracts_dir / f"{safe_contract_name}.nef"
-            persistent_manifest_path = generated_contracts_dir / f"{safe_contract_name}.manifest.json"
+            # Step 5: Read NEF and manifest for Supabase storage
+            nef_bytes = None
+            if nef_path and Path(nef_path).exists():
+                nef_bytes = Path(nef_path).read_bytes()
             
-            # Copy NEF file
-            shutil.copy2(nef_path, persistent_nef_path)
-            logger.info(f"💾 Saved NEF to: {persistent_nef_path}")
+            # Read manifest JSON
+            manifest_json = None
+            if manifest_path and Path(manifest_path).exists():
+                manifest_json = json.loads(Path(manifest_path).read_text(encoding='utf-8'))
             
-            # Copy manifest file and UPDATE the name to match the contract class name
-            # This is CRITICAL: The manifest name affects the contract hash!
-            # Ensure manifest_path is a Path object
-            manifest_path_obj = Path(manifest_path) if isinstance(manifest_path, str) else manifest_path
-            if not manifest_path_obj.exists():
-                logger.error(f"❌ Manifest file not found at: {manifest_path_obj}")
-                raise FileNotFoundError(f"Manifest file not found: {manifest_path_obj}")
-            
-            # Read the compiled manifest
-            manifest_json = json.loads(manifest_path_obj.read_text(encoding='utf-8'))
-            old_name = manifest_json.get("name", "Contract")
-            logger.info(f"🔍 Manifest before update: name='{old_name}', contract_name='{contract_name}'")
-            logger.info(f"🔍 Contract class name extracted: '{contract_name}'")
-            logger.info(f"🔍 Safe contract name: '{safe_contract_name}'")
-            logger.info(f"🔍 Manifest file path: {manifest_path_obj}")
-            
-            # ALWAYS update the manifest name to match the contract class name
-            # This is CRITICAL for unique contract hashes!
-            # FORCE the name - don't trust what the compiler put in there
-            manifest_json["name"] = contract_name  # Use the actual contract class name (e.g., CounterContract_1765065363870_3421)
-            logger.info(f"🔧 FORCED manifest name to: {contract_name}")
-            if old_name != contract_name:
-                logger.info(f"📝 Updated manifest name from '{old_name}' to '{contract_name}' (required for unique contract hash)")
-            else:
-                logger.warning(f"⚠️ Manifest name already matches contract name, but this shouldn't happen if names are unique")
-            
-            # Write updated manifest to the uniquely named file FIRST
-            persistent_manifest_path.write_text(json.dumps(manifest_json, indent=2), encoding='utf-8')
-            logger.info(f"💾 Saved manifest to: {persistent_manifest_path} with name: {manifest_json.get('name')}")
-            
-            # Verify the update worked on the persistent file
-            verify_manifest = json.loads(persistent_manifest_path.read_text(encoding='utf-8'))
-            if verify_manifest.get("name") != contract_name:
-                logger.error(f"❌ CRITICAL: Manifest name update failed! Expected '{contract_name}', got '{verify_manifest.get('name')}'")
-                raise RuntimeError(f"Failed to update manifest name to {contract_name}")
-            else:
-                logger.info(f"✅ Verified persistent manifest name is correctly set to: {contract_name}")
-            
-            # Also create symlinks/aliases with generic names for backward compatibility
-            # (so deploy endpoint can still find them)
-            generic_nef = generated_contracts_dir / "contract.nef"
-            generic_manifest = generated_contracts_dir / "contract.manifest.json"
-            
-            # Remove old generic files to ensure clean update
-            if generic_nef.exists():
-                generic_nef.unlink()  # Remove old generic file
-                logger.info(f"🗑️ Removed old generic NEF file")
-            if generic_manifest.exists():
-                generic_manifest.unlink()  # Remove old generic file
-                logger.info(f"🗑️ Removed old generic manifest file")
-            
-            # Copy NEF to generic location
-            shutil.copy2(persistent_nef_path, generic_nef)
-            logger.info(f"💾 Copied NEF to generic location: {generic_nef}")
-            
-            # Write updated manifest to generic file - FORCE UPDATE
-            # IMPORTANT: Use the updated manifest_json, not re-read from file
-            # Make absolutely sure the name is set correctly BEFORE writing
-            manifest_json["name"] = contract_name  # Force it one more time
-            logger.info(f"🔧 FORCING manifest name to: {contract_name} before write")
-            generic_manifest.write_text(json.dumps(manifest_json, indent=2), encoding='utf-8')
-            logger.info(f"💾 FORCED WRITE: Generic manifest with name: {contract_name}")
-            
-            # Verify the generic manifest was updated correctly - READ IT BACK IMMEDIATELY
-            verify_generic = json.loads(generic_manifest.read_text(encoding='utf-8'))
-            generic_name = verify_generic.get("name")
-            logger.info(f"🔍 Read back manifest name: {generic_name}")
-            if generic_name != contract_name:
-                logger.error(f"❌ CRITICAL: Generic manifest name update failed! Expected '{contract_name}', got '{generic_name}'")
-                logger.error(f"   Attempting force rewrite...")
-                # Force rewrite one more time with explicit name setting
-                manifest_json["name"] = contract_name
-                generic_manifest.write_text(json.dumps(manifest_json, indent=2), encoding='utf-8')
-                # Verify again
-                verify_again = json.loads(generic_manifest.read_text(encoding='utf-8'))
-                if verify_again.get("name") != contract_name:
-                    logger.error(f"❌ STILL FAILED after rewrite! Expected '{contract_name}', got '{verify_again.get('name')}'")
-                    logger.error(f"   Manifest content: {json.dumps(verify_again, indent=2)[:500]}")
-                    raise RuntimeError(f"Failed to update generic manifest name to {contract_name}. Got: {verify_again.get('name')}")
-                else:
-                    logger.info(f"✅ Fixed on second attempt: {contract_name}")
-            else:
-                logger.info(f"✅ Verified generic manifest name is correctly set to: {contract_name}")
-            
-            # Verify the copied NEF is valid
-            if persistent_nef_path.exists():
-                copied_size = persistent_nef_path.stat().st_size
-                if copied_size <= 24:
-                    return ExportContractResponse(
-                        contract=contract_code,
-                        manifest={},
-                        nef="",
-                        success=False,
-                        error=f"Copied NEF is invalid (only {copied_size} bytes). Compilation may have failed.",
-                        nef_path=None,
-                        manifest_path=None
+            # Step 5.5: Save to Supabase FIRST (primary storage)
+            contract_id = None
+            if SUPABASE_AVAILABLE and request.user_id:
+                try:
+                    # Update manifest name before saving
+                    if manifest_json:
+                        manifest_json["name"] = contract_name
+                    
+                    contract_id = await save_contract_to_supabase(
+                        user_id=request.user_id,
+                        contract_name=safe_contract_name,
+                        contract_code=contract_code,
+                        nef_data=nef_bytes,
+                        manifest_data=manifest_json or {},
+                        project_id=request.project_id,
+                        status="compiled" if compile_success else "generated"
                     )
+                    if contract_id:
+                        logger.info(f"💾 Contract saved to Supabase with ID: {contract_id}")
+                    else:
+                        logger.warning("⚠️ Failed to save contract to Supabase (check SUPABASE_URL and keys)")
+                except Exception as supabase_error:
+                    logger.warning(f"⚠️ Error saving to Supabase: {supabase_error} (continuing with filesystem fallback)")
+            
+            # Step 5.6: Optionally save to local filesystem as backup (only if Supabase save failed or not available)
+            persistent_nef_path = None
+            persistent_manifest_path = None
+            if not contract_id or not SUPABASE_AVAILABLE:
+                # Fallback to local storage if Supabase not available or save failed
+                persistent_nef_path = generated_contracts_dir / f"{safe_contract_name}.nef"
+                persistent_manifest_path = generated_contracts_dir / f"{safe_contract_name}.manifest.json"
+                
+                # Copy NEF file
+                if nef_bytes:
+                    persistent_nef_path.write_bytes(nef_bytes)
+                    logger.info(f"💾 Saved NEF to local filesystem: {persistent_nef_path}")
+                else:
+                    shutil.copy2(nef_path, persistent_nef_path)
+                    logger.info(f"💾 Saved NEF to local filesystem: {persistent_nef_path}")
+            
+            # Update manifest name to match the contract class name (if not already done)
+            # This is CRITICAL: The manifest name affects the contract hash!
+            if manifest_json:
+                old_name = manifest_json.get("name", "Contract")
+                logger.info(f"🔍 Manifest before update: name='{old_name}', contract_name='{contract_name}'")
+                
+                # ALWAYS update the manifest name to match the contract class name
+                manifest_json["name"] = contract_name
+                logger.info(f"🔧 FORCED manifest name to: {contract_name}")
+                if old_name != contract_name:
+                    logger.info(f"📝 Updated manifest name from '{old_name}' to '{contract_name}' (required for unique contract hash)")
+            
+            # Save manifest to local filesystem only if Supabase save failed
+            if persistent_manifest_path:
+                persistent_manifest_path.write_text(json.dumps(manifest_json, indent=2), encoding='utf-8')
+                logger.info(f"💾 Saved manifest to local filesystem: {persistent_manifest_path} with name: {manifest_json.get('name') if manifest_json else 'N/A'}")
+            
+            # Verify the NEF is valid (if we have it)
+            if nef_bytes and len(nef_bytes) <= 24:
+                return ExportContractResponse(
+                    contract=contract_code,
+                    manifest={},
+                    nef="",
+                    success=False,
+                    error=f"NEF is invalid (only {len(nef_bytes)} bytes). Compilation may have failed.",
+                    nef_path=None,
+                    manifest_path=None
+                )
             
             # Step 6: Read compiled files for response
             try:
@@ -1531,34 +1559,31 @@ async def export_contract(request: ContractGenerateRequest):
                     manifest_path=manifest_path_val
                 )
             
-            # Step 7: Save to Supabase if user_id is provided
-            contract_id = None
-            if SUPABASE_AVAILABLE and request.user_id:
+            # Step 6: Read compiled files for response (from Supabase or local fallback)
+            # If saved to Supabase, we already have the data; otherwise read from local files
+            if contract_id and SUPABASE_AVAILABLE:
+                # Use data we already have (from Supabase)
+                compiled_data = {
+                    "manifest": manifest_json or {},
+                    "nef": base64.b64encode(nef_bytes).decode('utf-8') if nef_bytes else ""
+                }
+            else:
+                # Fallback: read from local files
                 try:
-                    # Read NEF file as bytes
-                    nef_bytes = None
-                    if persistent_nef_path.exists():
-                        nef_bytes = persistent_nef_path.read_bytes()
-                    
-                    contract_id = await save_contract_to_supabase(
-                        user_id=request.user_id,
-                        contract_name=safe_contract_name,
-                        contract_code=contract_code,
-                        nef_data=nef_bytes,
-                        manifest_data=compiled_data.get("manifest", {}),
-                        project_id=request.project_id,
-                        status="compiled" if compile_success else "generated"
+                    compiled_data = read_compiled_files(
+                        str(persistent_nef_path) if persistent_nef_path else None,
+                        str(persistent_manifest_path) if persistent_manifest_path else None
                     )
-                    if contract_id:
-                        logger.info(f"💾 Contract saved to Supabase with ID: {contract_id}")
-                    else:
-                        logger.warning("⚠️ Failed to save contract to Supabase (check SUPABASE_URL and keys)")
-                except Exception as supabase_error:
-                    logger.warning(f"⚠️ Error saving to Supabase: {supabase_error} (continuing with filesystem only)")
+                except Exception as read_error:
+                    logger.error(f"Error reading compiled files: {read_error}")
+                    compiled_data = {
+                        "manifest": manifest_json or {},
+                        "nef": base64.b64encode(nef_bytes).decode('utf-8') if nef_bytes else ""
+                    }
             
-            # Ensure paths are strings (not None)
-            nef_path_str = str(persistent_nef_path) if persistent_nef_path is not None else None
-            manifest_path_str = str(persistent_manifest_path) if persistent_manifest_path is not None else None
+            # Ensure paths are strings (not None) - only set if local files were created
+            nef_path_str = str(persistent_nef_path) if persistent_nef_path and persistent_nef_path.exists() else None
+            manifest_path_str = str(persistent_manifest_path) if persistent_manifest_path and persistent_manifest_path.exists() else None
             
             return ExportContractResponse(
                 contract=contract_code,

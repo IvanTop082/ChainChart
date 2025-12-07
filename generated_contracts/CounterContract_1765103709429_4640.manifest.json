@@ -1,36 +1,22 @@
 {
-  "name": "CounterContract_1765071502790_7361",
+  "name": "CounterContract_1765103709429_4640",
   "groups": [],
   "features": {},
   "supportedstandards": [],
   "abi": {
     "methods": [
       {
-        "name": "counter",
-        "parameters": [],
-        "returntype": "Integer",
-        "offset": 0,
-        "safe": false
-      },
-      {
-        "name": "newState",
-        "parameters": [],
-        "returntype": "Integer",
-        "offset": 66,
-        "safe": false
-      },
-      {
         "name": "increment",
         "parameters": [],
         "returntype": "Void",
-        "offset": 114,
+        "offset": 0,
         "safe": false
       },
       {
         "name": "_initialize",
         "parameters": [],
         "returntype": "Void",
-        "offset": 197,
+        "offset": 92,
         "safe": false
       }
     ],
@@ -41,7 +27,7 @@
   "extra": {
     "Author": "SpoonAI",
     "Email": "",
-    "Description": "A simple counter contract with increment functionality.",
+    "Description": "A simple counter contract generated from ChainChart diagram.",
     "nef": {
       "optimization": "Basic"
     }

@@ -194,4 +194,3 @@ See `VERCEL_DEPLOYMENT.md` for production deployment guide.
 ---
 
 **Built with:** Next.js, FastAPI, Neo N3, SpoonOS AI, Supabase
-
